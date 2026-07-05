@@ -3,14 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, RefreshCw, Search, Loader2 } from "lucide-react";
+import { Bookmark, RefreshCw, Search, Loader2, Trash2 } from "lucide-react";
 import {
   api,
   getToken,
   type Tender,
   type TenderFilter,
   type TenderSource,
-  type PullEvent,
 } from "@/lib/api";
 import { AppNav } from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { TenderDetailDrawer } from "@/components/tenders/TenderDetailDrawer";
-import { PullProgress } from "@/components/tenders/PullProgress";
 
 const EMPTY: TenderFilter = {};
 
@@ -139,27 +137,46 @@ export default function TendersPage() {
               Public procurement notices from your sources
             </p>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={pullAllSources}
-            disabled={isPulling || enabledSources.length === 0}
-          >
-            {isPulling ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            {isPulling
-              ? "Pulling…"
-              : `Pull all sources (${enabledSources.length})`}
-          </Button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={pullAllSources}
+              disabled={bgPulling || enabledSources.length === 0}
+            >
+              {bgPulling ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {bgPulling
+                ? "Queuing…"
+                : `Pull all sources (${enabledSources.length})`}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                const total = tenders.data?.length ?? 0;
+                const excess = Math.max(0, total - 50);
+                if (
+                  window.confirm(
+                    excess
+                      ? `Remove ~${excess} old tender(s) and keep the newest 50? Their embeddings and downloaded documents are deleted too.`
+                      : "Keep only the newest 50 tenders? (Nothing may need removing right now.)",
+                  )
+                ) {
+                  cleanup.mutate();
+                }
+              }}
+              disabled={cleanup.isPending}
+              className="gap-1.5 text-muted-foreground"
+            >
+              <Trash2 className="h-4 w-4" />
+              Clean up old tenders
+            </Button>
+          </div>
         </div>
-
-        {/* Progress panel */}
-        {pullState && (
-          <PullProgress state={pullState} onDismiss={() => setPullState(null)} />
-        )}
 
         {/* Saved-filter chips */}
         {(savedFilters.data?.length ?? 0) > 0 && (

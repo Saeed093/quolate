@@ -88,6 +88,7 @@ def _clean_tables(_prepare_database):
     tables = [
         "saved_filters",
         "project_library_documents",
+        "library_document_comments",
         "library_document_embeddings",
         "library_documents",
         "tender_embeddings",

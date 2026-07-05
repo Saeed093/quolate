@@ -81,6 +81,100 @@ def test_delete_removes_doc(auth_client):
     assert auth_client.get("/library/documents").json() == []
 
 
+def test_unsupported_type_rejected(auth_client):
+    r = auth_client.post(
+        "/library/documents",
+        files=[("files", ("model.rar", b"\x52\x61\x72\x21", "application/octet-stream"))],
+    )
+    body = r.json()
+    assert body["created"] == []
+    assert len(body["errors"]) == 1
+    assert "unsupported file type" in body["errors"][0]["error"]
+    assert auth_client.get("/library/documents").json() == []
+
+
+def test_pptx_extraction():
+    from io import BytesIO
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from app.ingestion.extract import extract_content
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    box.text_frame.text = "SMT line quotation summary"
+    buf = BytesIO()
+    prs.save(buf)
+
+    content = extract_content("deck.pptx", None, buf.getvalue())
+    assert "SMT line quotation summary" in content.full_text
+    assert content.kind_detail == "pptx"
+
+
+def test_comments_crud_and_rag(auth_client):
+    doc_id = _upload(auth_client, "machine.txt", b"SMT pick and place machine")
+    doc_id = doc_id.json()["created"][0]["id"]
+
+    # Add two comments.
+    r1 = auth_client.post(
+        f"/library/documents/{doc_id}/comments",
+        json={"content": "we bought this machine for the H12 lab project"},
+    )
+    assert r1.status_code == 200
+    auth_client.post(
+        f"/library/documents/{doc_id}/comments",
+        json={"content": "supplier support was slow"},
+    )
+
+    comments = auth_client.get(f"/library/documents/{doc_id}/comments").json()
+    assert len(comments) == 2
+
+    docs = auth_client.get("/library/documents").json()
+    assert docs[0]["comment_count"] == 2
+
+    # RAG: the comment surfaces as a document_comment hit.
+    from app.chat.rag import search_all
+    from app.db.session import SessionLocal
+    from app.llm.embeddings import embed_text
+    from sqlalchemy import select as sa_select
+
+    from app.db.models import User
+
+    async def _search():
+        async with SessionLocal() as session:
+            user = (
+                await session.execute(
+                    sa_select(User).where(User.email == "user@example.com")
+                )
+            ).scalar_one()
+            hits = await search_all(
+                session,
+                user.id,
+                embed_text("H12 lab project machine"),
+                top_k=10,
+            )
+            return hits
+
+    hits = asyncio.run(_search())
+    assert any(h["type"] == "document_comment" for h in hits)
+
+    # Delete one.
+    cid = comments[0]["id"]
+    r = auth_client.delete(f"/library/documents/{doc_id}/comments/{cid}")
+    assert r.status_code == 200
+    assert len(auth_client.get(f"/library/documents/{doc_id}/comments").json()) == 1
+
+
+def test_original_inline_disposition(auth_client):
+    doc_id = _upload(auth_client, "view.txt", b"viewable").json()["created"][0]["id"]
+    r_dl = auth_client.get(f"/library/documents/{doc_id}/original")
+    assert r_dl.headers["content-disposition"].startswith("attachment")
+    r_inline = auth_client.get(f"/library/documents/{doc_id}/original?inline=1")
+    assert r_inline.headers["content-disposition"].startswith("inline")
+
+
 def test_link_unlink_project(auth_client):
     pid = auth_client.post("/projects", json={"name": "P"}).json()["id"]
     doc_id = _upload(auth_client, "ref.txt", b"reference doc").json()["created"][0]["id"]

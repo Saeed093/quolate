@@ -178,8 +178,8 @@ async def run_chat_stream(
     messages.append({"role": "user", "content": user_message})
 
     start_time = time.monotonic()
-    total_timeout = settings.llm_request_timeout_seconds * 2.5  # total budget for all iterations
-    last_unparseable = "" (~12.5min for 6 iterations)
+    total_timeout = settings.llm_request_timeout_seconds * 2.5  # total budget for all iterations (~12.5min for 6 iterations)
+    last_unparseable = ""
 
     for _ in range(MAX_ITERATIONS):
         elapsed = time.monotonic() - start_time

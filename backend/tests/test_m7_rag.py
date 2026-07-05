@@ -231,6 +231,159 @@ def test_global_chat_endpoint(auth_client):
     assert asyncio.run(_check()) >= 2
 
 
+def test_new_only_pull_skips_existing(auth_client):
+    """A second pull of the same listing skips existing tenders entirely."""
+    from datetime import date
+
+    from app.tenders.adapters.base import BaseAdapter, NoticeRef
+    from app.tenders.scraper import pull_source
+
+    class _FakeAdapter(BaseAdapter):
+        name = "fake"
+        default_org_type = "federal"
+        fetch_count = 0
+
+        def list_notices(self, since=None):
+            return [
+                NoticeRef(
+                    tender_no="NEW-1",
+                    title="Fresh tender",
+                    raw={
+                        "tender_no": "NEW-1",
+                        "title": "Fresh tender",
+                        "closing_date": "Jul 30, 2026",
+                    },
+                )
+            ]
+
+        def fetch_notice(self, ref):
+            type(self).fetch_count += 1
+            return self.notice_from_ref(ref)
+
+    async def _run():
+        async with SessionLocal() as session:
+            user = await _get_user(session)
+            source = TenderSource(
+                owner_id=user.id,
+                name="F",
+                base_url="https://example.com",
+                adapter="generic",
+            )
+            session.add(source)
+            await session.flush()
+            adapter = _FakeAdapter(source.base_url)
+
+            r1 = await pull_source(session, source, adapter=adapter, delay=0)
+            await session.commit()
+            # Second pull: same listing, now with a changed closing date.
+            adapter2 = _FakeAdapter(source.base_url)
+
+            def notices2(since=None):
+                return [
+                    NoticeRef(
+                        tender_no="NEW-1",
+                        title="Fresh tender",
+                        raw={
+                            "tender_no": "NEW-1",
+                            "title": "Fresh tender",
+                            "closing_date": "Aug 15, 2026",
+                        },
+                    )
+                ]
+
+            adapter2.list_notices = notices2
+            r2 = await pull_source(session, source, adapter=adapter2, delay=0)
+            await session.commit()
+
+            tender = (
+                await session.execute(
+                    select(Tender).where(Tender.tender_no == "NEW-1")
+                )
+            ).scalar_one()
+            return r1, r2, tender.closing_date
+
+    r1, r2, closing = asyncio.run(_run())
+    assert r1["created"] == 1
+    assert r2["created"] == 0
+    assert r2["skipped_existing"] == 1
+    # fetch_notice ran only during the first pull.
+    from datetime import date as _date
+
+    assert closing == _date(2026, 8, 15)  # date refreshed from listing row
+
+
+def test_trim_tenders(auth_client):
+    from app.tenders.cleanup import trim_tenders
+
+    async def _run():
+        async with SessionLocal() as session:
+            user = await _get_user(session)
+            source = TenderSource(
+                owner_id=user.id,
+                name="T",
+                base_url="https://example.com",
+                adapter="generic",
+            )
+            session.add(source)
+            await session.flush()
+            from datetime import date as _d
+
+            for i in range(8):
+                t = Tender(
+                    source_id=source.id,
+                    tender_no=f"TRIM-{i}",
+                    title=f"Tender {i}",
+                    advertise_date=_d(2026, 7, i + 1),  # deterministic ordering
+                )
+                session.add(t)
+                await session.flush()
+                session.add(
+                    TenderEmbedding(tender_id=t.id, content=f"t{i}", embedding=None)
+                )
+            await session.commit()
+
+            result = await trim_tenders(session, user.id, keep=3)
+
+            remaining = (
+                await session.execute(
+                    select(Tender).where(Tender.source_id == source.id)
+                )
+            ).scalars().all()
+            emb_count = len(
+                (await session.execute(select(TenderEmbedding))).scalars().all()
+            )
+            return result, [t.tender_no for t in remaining], emb_count
+
+    result, remaining, emb_count = asyncio.run(_run())
+    assert result["removed"] == 5
+    assert len(remaining) == 3
+    # Newest by created_at kept (advertise_date is null for all).
+    assert set(remaining) == {"TRIM-5", "TRIM-6", "TRIM-7"}
+    assert emb_count == 3  # embeddings of removed tenders cascaded away
+
+
+def test_requeue_stale_running_jobs(auth_client):
+    from app.db.models import Job
+    from app.jobs.worker import requeue_stale_jobs
+
+    async def _run():
+        async with SessionLocal() as session:
+            session.add(Job(type="parse_document", payload={}, status="running"))
+            session.add(Job(type="index_tender", payload={}, status="done"))
+            await session.commit()
+
+        requeued = await requeue_stale_jobs()
+
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(Job))).scalars().all()
+            return requeued, {j.type: j.status for j in rows}
+
+    requeued, statuses = asyncio.run(_run())
+    assert requeued == 1
+    assert statuses["parse_document"] == "queued"
+    assert statuses["index_tender"] == "done"
+
+
 def test_global_chat_excludes_project_tools(auth_client):
     """The global assistant must not advertise or execute project-scoped tools."""
     from app.chat.tools import build_registry
