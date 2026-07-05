@@ -1,0 +1,22 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: quolate_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quolate
+      POSTGRES_PASSWORD: quolate
+      POSTGRES_DB: quolate
+    ports:
+      # Host 5433 -> container 5432 (avoids clashing with any native Postgres)
+      - "5433:5432"
+    volumes:
+      - quolate_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quolate -d quolate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  quolate_pgdata:

@@ -1,0 +1,717 @@
+// Typed API client. The ONLY way the frontend talks to the backend.
+// Base URL comes from env so cloud migration only changes NEXT_PUBLIC_API_URL.
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const TOKEN_KEY = "quolate_token";
+
+let inMemoryToken: string | null = null;
+
+export function setToken(token: string | null) {
+  inMemoryToken = token;
+  if (typeof window !== "undefined") {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+export function getToken(): string | null {
+  if (inMemoryToken) return inMemoryToken;
+  if (typeof window !== "undefined") {
+    inMemoryToken = localStorage.getItem(TOKEN_KEY);
+  }
+  return inMemoryToken;
+}
+
+export function apiUrl(path: string): string {
+  return `${BASE_URL}${path}`;
+}
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** FastAPI validation errors return `detail` as a list of objects — flatten to text. */
+function formatErrorDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((d) => {
+        if (d && typeof d === "object" && "msg" in d) {
+          const loc = Array.isArray((d as { loc?: unknown[] }).loc)
+            ? (d as { loc: unknown[] }).loc.slice(1).join(".")
+            : "";
+          const msg = String((d as { msg: unknown }).msg);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return String(d);
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  return "Request failed";
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (!(options.body instanceof FormData) && options.body) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  if (!res.ok) {
+    let detail: unknown = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data.detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, formatErrorDetail(detail));
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+// ---- Types ----
+export interface AuthToken {
+  access_token: string;
+  token_type: string;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  display_name: string | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  status: string;
+  base_currency: string;
+  landed_cost_defaults: Record<string, unknown>;
+}
+
+export interface BomItem {
+  id: string;
+  project_id: string;
+  line_no: number;
+  part_name: string;
+  spec_requirement: string | null;
+  quantity: string | null;
+  target_price: string | null;
+  notes: string | null;
+}
+
+export interface Supplier {
+  id: string;
+  project_id: string;
+  name: string;
+  country: string | null;
+  contact: string | null;
+  default_currency: string | null;
+}
+
+export interface Document {
+  id: string;
+  project_id: string;
+  supplier_id: string | null;
+  kind: string;
+  original_filename: string;
+  mime_type: string | null;
+  status: string;
+  page_count: number | null;
+  ocr_used: boolean;
+  error: string | null;
+  created_at: string;
+}
+
+export interface ExtractedField {
+  id: string;
+  document_id: string;
+  bom_item_id: string | null;
+  supplier_id: string | null;
+  field_type: string;
+  value_text: string | null;
+  value_num: string | null;
+  unit: string | null;
+  confidence: string | null;
+  status: string;
+  provenance: {
+    page?: number | null;
+    bbox?: [number, number, number, number] | null;
+    source_snippet?: string | null;
+  };
+}
+
+export interface DocumentReview {
+  document: Document;
+  fields: ExtractedField[];
+  page_urls: string[];
+}
+
+export type CellState = "ok" | "verify" | "gap";
+
+export interface MatrixCell {
+  supplier_id: string;
+  quote_id: string | null;
+  document_id: string | null;
+  fob: number | null;
+  landed: number | null;
+  currency: string;
+  moq: number | null;
+  lead_time_days: number | null;
+  confidence_state: CellState;
+  best_value: boolean;
+  field_ids: string[];
+}
+
+export interface MatrixRow {
+  bom_item_id: string;
+  line_no: number;
+  part_name: string;
+  spec_requirement: string | null;
+  quantity: number | null;
+  target_price: number | null;
+  best_supplier_id: string | null;
+  spread_pct: number | null;
+  cells: Record<string, MatrixCell>;
+}
+
+export interface Matrix {
+  project_id: string;
+  currency: string;
+  assumptions: {
+    duty_pct: number;
+    freight_per_unit: number;
+    lc_pct: number;
+    fx_overrides: Record<string, number>;
+  };
+  suppliers: { id: string; name: string; country: string | null }[];
+  rows: MatrixRow[];
+  summary: {
+    lines_total: number;
+    suppliers_total: number;
+    docs_parsed: number;
+    fields_needing_review: number;
+    lowest_landed: number | null;
+    overall_spread_pct: number | null;
+  };
+  matrix_hash: string;
+}
+
+export interface MatrixParams {
+  currency?: string;
+  duty_pct?: number;
+  freight_per_unit?: number;
+  lc_pct?: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  project_id: string | null;
+  role: string;
+  content: string;
+  tool_calls: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface LibraryDocument {
+  id: string;
+  filename: string;
+  kind: string;
+  status: string;
+  page_count: number | null;
+  error: string | null;
+  comment_count?: number;
+  created_at: string | null;
+}
+
+export interface DocumentComment {
+  id: string;
+  content: string;
+  created_at: string | null;
+}
+
+export interface LibraryUploadResult {
+  created: { id: string; filename: string; kind: string }[];
+  skipped: { filename: string; id: string; reason: string }[];
+  errors: { filename?: string; error: string }[];
+}
+
+export interface ProjectLibraryDocument {
+  id: string; // link id
+  library_document_id: string;
+  filename: string;
+  kind: string;
+  status: string;
+  linked_at: string | null;
+}
+
+export interface Tender {
+  id: string;
+  source_id: string;
+  tender_no: string | null;
+  title: string | null;
+  organization: string | null;
+  org_type: string | null;
+  category: string | null;
+  sector_tags: string[] | null;
+  city: string | null;
+  closing_date: string | null;
+  advertise_date: string | null;
+  estimated_value: string | null;
+  corrigendum_of: string | null;
+  created_at: string;
+}
+
+export interface TenderMatch {
+  document_id: string;
+  project_id: string;
+  supplier: string | null;
+  item: string;
+  unit_price: number | null;
+  currency: string | null;
+  date: string | null;
+  similarity: number;
+}
+
+export interface TenderSource {
+  id: string;
+  name: string;
+  base_url: string;
+  adapter: string;
+  enabled: boolean;
+  last_run: string | null;
+  last_status: string | null;
+}
+
+export interface SavedFilter {
+  id: string;
+  name: string;
+  criteria: Record<string, unknown>;
+}
+
+export interface LlmStatus {
+  online: boolean;
+  model: string;
+  gpu: boolean;
+  gpu_name: string | null;
+  vram_used: string | null;
+}
+
+export interface TenderFilter {
+  keyword?: string;
+  tender_no?: string;
+  org_type?: string;
+  category?: string;
+  sector?: string;
+  organization?: string;
+  city?: string;
+  status?: string;
+  closing_from?: string;
+  closing_to?: string;
+}
+
+function qs(params: Record<string, unknown>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
+// ---- Chat SSE ----
+export interface ChatEvent {
+  type: "tool_call" | "tool_result" | "final" | "regenerate";
+  action?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  content?: string;
+  matrix_changed?: boolean;
+  matrix_hash?: string;
+  regenerated?: boolean;
+  terminated?: boolean;
+  tool_calls?: { action: string; args: Record<string, unknown> }[];
+}
+
+async function streamChatTo(
+  path: string,
+  body: { message: string; currency?: string; overrides?: Record<string, number> },
+  onEvent: (event: ChatEvent) => void,
+): Promise<void> {
+  const token = getToken();
+  const controller = new AbortController();
+  const timeoutMs = 330 * 1000; // 5.5 min — backend's 5min + buffer for CPU-bound models
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new ApiError(res.status, "Chat request failed");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") return;
+        try {
+          onEvent(JSON.parse(payload) as ChatEvent);
+        } catch {
+          /* ignore malformed chunk */
+        }
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError(0, "Request timed out. Please try again or simplify your message.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function streamChat(
+  projectId: string,
+  body: { message: string; currency?: string; overrides?: Record<string, number> },
+  onEvent: (event: ChatEvent) => void,
+): Promise<void> {
+  return streamChatTo(`/projects/${projectId}/chat`, body, onEvent);
+}
+
+function streamGlobalChat(
+  body: { message: string },
+  onEvent: (event: ChatEvent) => void,
+): Promise<void> {
+  return streamChatTo(`/chat`, body, onEvent);
+}
+
+// ---- Pull SSE ----
+export interface PullEvent {
+  phase: "listing" | "fetching" | "notice" | "done";
+  source_name?: string;
+  index?: number;
+  total?: number;
+  title?: string;
+  step?: "fetching" | "classifying" | "done" | "error";
+  action?: string;
+  error?: string;
+  status?: string;
+  created?: number;
+  updated?: number;
+  skipped?: number;
+}
+
+async function streamPullSource(
+  sourceId: string,
+  onEvent: (event: PullEvent) => void,
+): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/tender-sources/${sourceId}/pull`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, "Pull request failed");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") return;
+      try {
+        onEvent(JSON.parse(payload) as PullEvent);
+      } catch {
+        /* ignore malformed chunk */
+      }
+    }
+  }
+}
+
+// ---- Endpoints ----
+export const api = {
+  health: () => request<{ status: string }>("/health"),
+  llmStatus: () => request<LlmStatus>("/status/llm"),
+
+  register: (email: string, password: string, displayName?: string) =>
+    request<User>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password, display_name: displayName }),
+    }),
+
+  login: async (email: string, password: string) => {
+    const token = await request<AuthToken>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    setToken(token.access_token);
+    return token;
+  },
+
+  me: () => request<User>("/auth/me"),
+  logout: () => setToken(null),
+
+  // Projects
+  listProjects: () => request<Project[]>("/projects"),
+  getProject: (id: string) => request<Project>(`/projects/${id}`),
+  createProject: (name: string) =>
+    request<Project>("/projects", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  updateProject: (id: string, patch: Partial<Project>) =>
+    request<Project>(`/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  // BOM
+  listBom: (pid: string) => request<BomItem[]>(`/projects/${pid}/bom`),
+  createBom: (pid: string, item: Partial<BomItem>) =>
+    request<BomItem>(`/projects/${pid}/bom`, {
+      method: "POST",
+      body: JSON.stringify(item),
+    }),
+  pasteBom: (pid: string, text: string, hasHeader?: boolean) =>
+    request<BomItem[]>(`/projects/${pid}/bom/paste`, {
+      method: "POST",
+      body: JSON.stringify({ text, has_header: hasHeader ?? null }),
+    }),
+  updateBom: (itemId: string, patch: Partial<BomItem>) =>
+    request<BomItem>(`/bom/${itemId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteBom: (itemId: string) =>
+    request<void>(`/bom/${itemId}`, { method: "DELETE" }),
+
+  // Suppliers
+  listSuppliers: (pid: string) =>
+    request<Supplier[]>(`/projects/${pid}/suppliers`),
+  createSupplier: (pid: string, s: Partial<Supplier>) =>
+    request<Supplier>(`/projects/${pid}/suppliers`, {
+      method: "POST",
+      body: JSON.stringify(s),
+    }),
+  deleteSupplier: (id: string) =>
+    request<void>(`/suppliers/${id}`, { method: "DELETE" }),
+
+  // Documents
+  listDocuments: (pid: string) =>
+    request<Document[]>(`/projects/${pid}/documents`),
+  uploadDocuments: (pid: string, files: File[], kind?: string) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    if (kind) fd.append("kind", kind);
+    return request<Document[]>(`/projects/${pid}/documents`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+  reviewDocument: (docId: string) =>
+    request<DocumentReview>(`/documents/${docId}/review`),
+  pageImageUrl: (docId: string, page: number) =>
+    apiUrl(`/documents/${docId}/pages/${page}.png`),
+  updateField: (fieldId: string, patch: Partial<ExtractedField>) =>
+    request<ExtractedField>(`/fields/${fieldId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  // Matrix
+  getMatrix: (pid: string, params: MatrixParams = {}) =>
+    request<Matrix>(
+      `/projects/${pid}/matrix${qs(params as Record<string, unknown>)}`,
+    ),
+  matrixExportUrl: (pid: string, params: MatrixParams = {}) =>
+    apiUrl(
+      `/projects/${pid}/matrix/export${qs(params as Record<string, unknown>)}`,
+    ),
+
+  // Chat
+  chatHistory: (pid: string) =>
+    request<ChatMessage[]>(`/projects/${pid}/chat`),
+  streamChat,
+  globalChatHistory: () => request<ChatMessage[]>(`/chat`),
+  streamGlobalChat,
+
+  // Library ("My Documents")
+  listLibraryDocuments: () =>
+    request<LibraryDocument[]>(`/library/documents`),
+  // XHR-based so upload progress can be reported (fetch can't).
+  uploadLibraryDocuments: (
+    files: File[],
+    onProgress?: (percent: number) => void,
+  ): Promise<LibraryUploadResult> => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    const token = getToken();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE_URL}/library/documents`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as LibraryUploadResult);
+          } catch {
+            reject(new ApiError(xhr.status, "Malformed upload response"));
+          }
+        } else {
+          reject(new ApiError(xhr.status, "Upload failed"));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError(0, "Upload failed"));
+      xhr.send(fd);
+    });
+  },
+  deleteLibraryDocument: (id: string) =>
+    request<{ deleted: string }>(`/library/documents/${id}`, {
+      method: "DELETE",
+    }),
+  libraryDocumentUrl: (id: string, inline = false) =>
+    apiUrl(`/library/documents/${id}/original${inline ? "?inline=1" : ""}`),
+  // Fetch the file with auth and open/save it via a blob URL (plain <a href>
+  // can't carry the Bearer token).
+  openLibraryDocument: async (id: string, filename: string, inline: boolean) => {
+    const token = getToken();
+    const res = await fetch(
+      apiUrl(`/library/documents/${id}/original${inline ? "?inline=1" : ""}`),
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (!res.ok) throw new ApiError(res.status, "Could not load file");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (inline) {
+      window.open(url, "_blank");
+    } else {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  },
+
+  // Document comments
+  listDocumentComments: (docId: string) =>
+    request<DocumentComment[]>(`/library/documents/${docId}/comments`),
+  addDocumentComment: (docId: string, content: string) =>
+    request<DocumentComment>(`/library/documents/${docId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+  deleteDocumentComment: (docId: string, commentId: string) =>
+    request<{ deleted: string }>(
+      `/library/documents/${docId}/comments/${commentId}`,
+      { method: "DELETE" },
+    ),
+
+  // Tender cleanup
+  cleanupTenders: (keep?: number) =>
+    request<{ removed: number; kept: number }>(`/tenders/cleanup`, {
+      method: "POST",
+      body: JSON.stringify(keep !== undefined ? { keep } : {}),
+    }),
+
+  // Project <-> library links
+  listProjectLibraryDocuments: (pid: string) =>
+    request<ProjectLibraryDocument[]>(`/projects/${pid}/library-documents`),
+  linkLibraryDocument: (pid: string, libraryDocumentId: string) =>
+    request<{ linked: boolean }>(`/projects/${pid}/library-documents`, {
+      method: "POST",
+      body: JSON.stringify({ library_document_id: libraryDocumentId }),
+    }),
+  unlinkLibraryDocument: (pid: string, linkId: string) =>
+    request<{ deleted: boolean }>(
+      `/projects/${pid}/library-documents/${linkId}`,
+      { method: "DELETE" },
+    ),
+
+  // Tenders
+  listTenders: (filter: TenderFilter = {}) =>
+    request<Tender[]>(`/tenders${qs(filter as Record<string, unknown>)}`),
+  getTender: (id: string) => request<Tender>(`/tenders/${id}`),
+  tenderMatches: (id: string) =>
+    request<{ tender_id: string; count: number; matches: TenderMatch[] }>(
+      `/tenders/${id}/matches`,
+    ),
+  notificationBadge: () =>
+    request<{ count: number }>("/tenders/notifications/badge"),
+
+  // Tender sources
+  listSources: () => request<TenderSource[]>("/tender-sources"),
+  createSource: (name: string, baseUrl: string, adapter = "generic") =>
+    request<TenderSource>("/tender-sources", {
+      method: "POST",
+      body: JSON.stringify({ name, base_url: baseUrl, adapter }),
+    }),
+  updateSource: (id: string, patch: Partial<TenderSource>) =>
+    request<TenderSource>(`/tender-sources/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteSource: (id: string) =>
+    request<void>(`/tender-sources/${id}`, { method: "DELETE" }),
+  pullSource: (id: string) =>
+    request<{ status: string; created: number; updated: number; total: number }>(
+      `/tender-sources/${id}/pull`,
+      { method: "POST" },
+    ),
+  pullSourceAsync: (id: string) =>
+    request<{ job_id: string; status: string }>(
+      `/tender-sources/${id}/pull-async`,
+      { method: "POST" },
+    ),
+  streamPullSource,
+
+  // Saved filters
+  listSavedFilters: () => request<SavedFilter[]>("/saved-filters"),
+  createSavedFilter: (name: string, criteria: Record<string, unknown>) =>
+    request<SavedFilter>("/saved-filters", {
+      method: "POST",
+      body: JSON.stringify({ name, criteria }),
+    }),
+  deleteSavedFilter: (id: string) =>
+    request<void>(`/saved-filters/${id}`, { method: "DELETE" }),
+};
