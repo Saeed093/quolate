@@ -5,6 +5,7 @@ import { useDropzone } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UploadCloud, FileText, Library, X } from "lucide-react";
 import { api, type Document, type LibraryDocument } from "@/lib/api";
+import { useActivity } from "@/contexts/ActivityContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,6 +38,8 @@ export function InboxTab({
   onConsumeOpen: () => void;
 }) {
   const qc = useQueryClient();
+  const { startUpload, endUpload } = useActivity();
+  const uploadId = `project-${projectId}`;
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryFilter, setLibraryFilter] = useState("");
@@ -55,13 +58,17 @@ export function InboxTab({
   });
 
   const upload = useMutation({
-    mutationFn: ({ files, kind }: { files: File[]; kind?: string }) =>
-      api.uploadDocuments(projectId, files, kind),
+    mutationFn: ({ files, kind }: { files: File[]; kind?: string }) => {
+      startUpload(uploadId, `Uploading ${files.length} file(s)…`);
+      return api.uploadDocuments(projectId, files, kind);
+    },
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["documents", projectId] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
       toast({ title: `Uploaded ${created.length} file(s)` });
     },
     onError: () => toast({ title: "Upload failed", variant: "destructive" }),
+    onSettled: () => endUpload(uploadId),
   });
 
   const onDrop = useCallback(

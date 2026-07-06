@@ -15,6 +15,7 @@ import {
   Send,
 } from "lucide-react";
 import { api, getToken, type LibraryDocument } from "@/lib/api";
+import { useActivity } from "@/contexts/ActivityContext";
 import { AppNav } from "@/components/AppNav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,7 +42,8 @@ const STATUS_LABEL: Record<string, string> = {
 export default function DocumentsPage() {
   const router = useRouter();
   const qc = useQueryClient();
-  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const { startUpload, setUploadProgress, endUpload, uploads } = useActivity();
+  const libraryUpload = uploads.find((u) => u.id === "library");
   const [commentsFor, setCommentsFor] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,10 +63,15 @@ export default function DocumentsPage() {
   });
 
   const upload = useMutation({
-    mutationFn: (files: File[]) =>
-      api.uploadLibraryDocuments(files, setUploadPct),
+    mutationFn: (files: File[]) => {
+      startUpload("library", `Uploading ${files.length} file(s)…`);
+      return api.uploadLibraryDocuments(files, (pct) =>
+        setUploadProgress("library", pct),
+      );
+    },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["library-documents"] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
       const created = result.created.length;
       const skipped = result.skipped.length;
       const errors = result.errors;
@@ -80,7 +87,7 @@ export default function DocumentsPage() {
       });
     },
     onError: () => toast({ title: "Upload failed", variant: "destructive" }),
-    onSettled: () => setUploadPct(null),
+    onSettled: () => endUpload("library"),
   });
 
   const del = useMutation({
@@ -156,18 +163,20 @@ export default function DocumentsPage() {
         </div>
 
         {/* Upload progress */}
-        {uploadPct !== null && (
+        {libraryUpload && (
           <div className="mb-6 space-y-1">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
-                {uploadPct < 100 ? "Uploading…" : "Processing upload…"}
+                {(libraryUpload.percent ?? 0) < 100
+                  ? "Uploading…"
+                  : "Processing upload…"}
               </span>
-              <span>{uploadPct}%</span>
+              <span>{libraryUpload.percent ?? 0}%</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full rounded-full bg-primary transition-all duration-200"
-                style={{ width: `${uploadPct}%` }}
+                style={{ width: `${libraryUpload.percent ?? 0}%` }}
               />
             </div>
           </div>

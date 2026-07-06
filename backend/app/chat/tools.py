@@ -22,7 +22,11 @@ from app.db.models import (
     TenderSource,
     User,
 )
+from app.duty.calculator import calculate_duty as _calculate_duty_fn
+from app.duty.classifier import ClassificationInputError
+from app.duty.classifier import classify_hs_code as _classify_hs_code_fn
 from app.llm.client import get_llm_client
+from app.llm.json_enforce import SchemaEnforceError
 from app.matrix.builder import build_matrix
 from app.tenders.correlation import (
     correlate_tender as _correlate_tender,
@@ -303,6 +307,81 @@ async def _tool_draft_supplier_email(
     return {"supplier": supplier.name, "draft": body}
 
 
+async def _tool_calculate_duty(
+    ctx: ChatContext,
+    hs_code: str,
+    declared_value_usd: float,
+    exchange_rate: float,
+    importer_category: str | None = None,
+    atl_status: str | None = None,
+    as_of_date: str | None = None,
+) -> dict:
+    """Compute the Pakistan import duty/tax stack for one HS code."""
+    parsed_date: date | None = None
+    if as_of_date:
+        try:
+            parsed_date = date.fromisoformat(as_of_date)
+        except ValueError:
+            return {"error": f"invalid as_of_date '{as_of_date}', expected YYYY-MM-DD"}
+    try:
+        breakdown = await _calculate_duty_fn(
+            ctx.session,
+            hs_code=hs_code,
+            declared_value_usd=declared_value_usd,
+            exchange_rate=exchange_rate,
+            importer_category=importer_category,
+            atl_status=atl_status,
+            as_of_date=parsed_date,
+        )
+    except Exception as exc:  # bad decimal input, etc.
+        return {"error": str(exc)}
+    return {
+        "hs_code": breakdown.hs_code,
+        "declared_value_usd": breakdown.declared_value_usd,
+        "exchange_rate": breakdown.exchange_rate,
+        "assessed_value_pkr": breakdown.assessed_value_pkr,
+        "importer_category": breakdown.importer_category,
+        "atl_status": breakdown.atl_status,
+        "as_of_date": breakdown.as_of_date,
+        "levies": [
+            {
+                "levy_type": line.levy_type,
+                "label": line.label,
+                "rate": line.rate,
+                "rate_type": line.rate_type,
+                "basis_pkr": line.basis_pkr,
+                "amount_pkr": line.amount_pkr,
+                "legal_reference": line.legal_reference,
+                "sro_reference": line.sro_reference,
+                "exemption_applied": line.exemption_applied,
+                "notes": line.notes,
+            }
+            for line in breakdown.lines
+        ],
+        "total_duty_tax_pkr": breakdown.total_duty_tax_pkr,
+        "total_landed_pkr": breakdown.total_landed_pkr,
+        "disclaimer": (
+            "Calculation aid based on ingested rate data -- verify before "
+            "relying on this for a client-facing quote or a filing."
+        ),
+    }
+
+
+async def _tool_classify_hs_code(ctx: ChatContext, product_description: str) -> dict:
+    """Suggest candidate Pakistan HS/PCT codes for a product description."""
+    try:
+        result = await _classify_hs_code_fn(ctx.session, text=product_description)
+    except ClassificationInputError as exc:
+        return {"error": str(exc)}
+    except SchemaEnforceError as exc:
+        return {"error": str(exc)}
+    return {
+        "product_summary": result.product_summary,
+        "candidates": [c.model_dump() for c in result.candidates],
+        "disclaimer": result.disclaimer,
+    }
+
+
 # ---------- Registry ----------
 # Tools that only make sense inside a project workbench (need ctx.project).
 _PROJECT_TOOLS = {
@@ -436,6 +515,61 @@ def build_registry(include_project_tools: bool = True) -> dict[str, Tool]:
                     "required": ["supplier_id", "purpose"],
                 },
                 _tool_draft_supplier_email,
+            ),
+            Tool(
+                "calculate_duty",
+                "Compute the Pakistan import duty/tax stack (CD, ACD, RD, FED, "
+                "ST, WHT/Section 148) for one HS/PCT code, given a declared "
+                "value in USD and a PKR exchange rate. Returns the full "
+                "levy-by-levy breakdown and totals.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "hs_code": {
+                            "type": "string",
+                            "description": "Pakistan Customs Tariff code, e.g. '8517.12.00'.",
+                        },
+                        "declared_value_usd": {"type": "number"},
+                        "exchange_rate": {
+                            "type": "number",
+                            "description": "Customs-notified PKR-per-USD rate.",
+                        },
+                        "importer_category": {
+                            "type": "string",
+                            "description": (
+                                "e.g. industrial_undertaking_own_use, "
+                                "commercial_importer. Omit for the general rate."
+                            ),
+                        },
+                        "atl_status": {
+                            "type": "string",
+                            "enum": ["atl", "non_atl"],
+                            "description": "Active Taxpayer List status -- affects Section 148.",
+                        },
+                        "as_of_date": {
+                            "type": "string",
+                            "description": "YYYY-MM-DD. Defaults to today.",
+                        },
+                    },
+                    "required": ["hs_code", "declared_value_usd", "exchange_rate"],
+                },
+                _tool_calculate_duty,
+            ),
+            Tool(
+                "classify_hs_code",
+                "Suggest candidate Pakistan HS/PCT codes for a product from a "
+                "free-text description. Returns 1-3 ranked candidates with "
+                "confidence and reasoning -- a heuristic aid, not an "
+                "authoritative ruling; the user should verify before relying "
+                "on it, e.g. before calling calculate_duty.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "product_description": {"type": "string"},
+                    },
+                    "required": ["product_description"],
+                },
+                _tool_classify_hs_code,
             ),
         ]
     }

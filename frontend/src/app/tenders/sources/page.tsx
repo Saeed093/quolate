@@ -69,6 +69,7 @@ export default function SourcesPage() {
     mutationFn: (id: string) => api.pullSourceAsync(id),
     onSuccess: (_data, id) => {
       setBgPulling((prev) => new Set(prev).add(id));
+      qc.invalidateQueries({ queryKey: ["activity"] });
       toast({
         title: "Pull queued",
         description:

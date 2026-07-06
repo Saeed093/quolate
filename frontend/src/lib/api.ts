@@ -293,6 +293,70 @@ export interface TenderSource {
   last_status: string | null;
 }
 
+export type DutyLevyType = "CD" | "ACD" | "RD" | "FED" | "ST" | "WHT_148";
+export type AtlStatus = "atl" | "non_atl";
+
+export const IMPORTER_CATEGORIES: { value: string; label: string }[] = [
+  { value: "commercial_importer", label: "Commercial importer" },
+  {
+    value: "industrial_undertaking_own_use",
+    label: "Industrial undertaking (own use)",
+  },
+];
+
+export interface DutyLevyLine {
+  levy_type: DutyLevyType;
+  label: string;
+  rate: string;
+  rate_type: string;
+  basis_pkr: string;
+  amount_pkr: string;
+  legal_reference: string | null;
+  sro_reference: string | null;
+  exemption_applied: boolean;
+  notes: string | null;
+}
+
+export interface DutyCalculation {
+  hs_code: string;
+  declared_value_usd: string;
+  exchange_rate: string;
+  assessed_value_pkr: string;
+  importer_category: string | null;
+  atl_status: AtlStatus | null;
+  as_of_date: string;
+  levies: DutyLevyLine[];
+  total_duty_tax_pkr: string;
+  total_landed_pkr: string;
+  disclaimer: string;
+}
+
+export interface DutyCalcParams {
+  declared_value_usd: number;
+  exchange_rate: number;
+  importer_category?: string;
+  atl_status?: AtlStatus;
+  as_of_date?: string;
+}
+
+export interface HsCandidate {
+  hs_code: string;
+  description: string | null;
+  confidence: number;
+  reasoning: string | null;
+}
+
+export interface HsClassificationResult {
+  product_summary: string | null;
+  candidates: HsCandidate[];
+  disclaimer: string;
+}
+
+export interface ClassifyHsCodeParams {
+  library_document_id?: string;
+  text?: string;
+}
+
 export interface SavedFilter {
   id: string;
   name: string;
@@ -305,6 +369,17 @@ export interface LlmStatus {
   gpu: boolean;
   gpu_name: string | null;
   vram_used: string | null;
+}
+
+export interface TenderPullActivity {
+  source_id: string;
+  source_name: string;
+  status: string;
+}
+
+export interface ActivitySummary {
+  documents_processing: number;
+  tender_pulls: TenderPullActivity[];
 }
 
 export interface TenderFilter {
@@ -679,6 +754,9 @@ export const api = {
   notificationBadge: () =>
     request<{ count: number }>("/tenders/notifications/badge"),
 
+  // Background activity
+  getActivity: () => request<ActivitySummary>("/activity"),
+
   // Tender sources
   listSources: () => request<TenderSource[]>("/tender-sources"),
   createSource: (name: string, baseUrl: string, adapter = "generic") =>
@@ -704,6 +782,19 @@ export const api = {
       { method: "POST" },
     ),
   streamPullSource,
+
+  // Pakistan duty/tax calculator
+  dutyHsCodes: (search?: string) =>
+    request<string[]>(`/duty-calc/hs-codes${qs({ q: search })}`),
+  dutyCalc: (hsCode: string, params: DutyCalcParams) =>
+    request<DutyCalculation>(
+      `/duty-calc/${encodeURIComponent(hsCode)}${qs(params as unknown as Record<string, unknown>)}`,
+    ),
+  classifyHsCode: (params: ClassifyHsCodeParams) =>
+    request<HsClassificationResult>(`/duty-calc/classify`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
 
   // Saved filters
   listSavedFilters: () => request<SavedFilter[]>("/saved-filters"),

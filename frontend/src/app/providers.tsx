@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { AppShell } from "@/components/AppShell";
 import { ChatProvider } from "@/contexts/ChatContext";
+import { ActivityProvider } from "@/contexts/ActivityContext";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(
@@ -17,9 +18,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
   return (
     <QueryClientProvider client={client}>
-      <ChatProvider>
-        <AppShell>{children}</AppShell>
-      </ChatProvider>
+      <ActivityProvider>
+        <ChatProvider>
+          <AppShell>{children}</AppShell>
+        </ChatProvider>
+      </ActivityProvider>
       <Toaster />
     </QueryClientProvider>
   );

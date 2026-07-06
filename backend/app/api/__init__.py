@@ -17,12 +17,14 @@ _ROUTER_MODULES = [
     "app.api.documents",
     "app.api.fields",
     "app.api.matrix",
+    "app.api.duty",
     "app.api.chat",
     "app.api.tenders",
     "app.api.tender_sources",
     "app.api.saved_filters",
     "app.api.library",
     "app.api.project_library_links",
+    "app.api.activity",
 ]
 
 

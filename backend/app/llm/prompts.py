@@ -64,3 +64,58 @@ def build_extraction_messages(bom_lines: list[dict], chunk_text: str) -> list[di
         {"role": "system", "content": EXTRACTION_SYSTEM},
         {"role": "user", "content": user},
     ]
+
+
+HS_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "product_summary": {"type": ["string", "null"]},
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "hs_code": {"type": "string"},
+                    "description": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "reasoning": {"type": ["string", "null"]},
+                },
+                "required": ["hs_code", "confidence"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    "required": ["candidates"],
+    "additionalProperties": True,
+}
+
+HS_CLASSIFY_SYSTEM = (
+    "You are a Pakistan customs classification assistant. Given a product "
+    "description or an excerpt from a supplier document (invoice, packing "
+    "list, spec sheet, etc.), suggest the most likely Pakistan Customs "
+    "Tariff (PCT/HS) code(s), formatted like '8517.12.00'. "
+    "This is a heuristic best guess to help a human classifier, NOT an "
+    "authoritative ruling -- always give a short reasoning so it can be "
+    "verified. If one of the ALREADY-INGESTED codes listed below is a close "
+    "match, prefer it (the calculator already has rate data for it); "
+    "otherwise suggest the closest real PCT code you know and note in the "
+    "reasoning that it may not yet be in the system. Return 1-3 candidates "
+    "ranked most-likely first, each with a confidence between 0 and 1. "
+    "Return ONLY JSON matching the schema, no prose."
+)
+
+
+def build_hs_classify_messages(text: str, known_codes: list[str]) -> list[dict]:
+    known_block = ", ".join(known_codes) if known_codes else "(none ingested yet)"
+    user = (
+        f"Already-ingested HS codes with rate data (prefer these if a close "
+        f"match): {known_block}\n\n"
+        f"Product description / document excerpt:\n\"\"\"\n{text}\n\"\"\"\n\n"
+        "Return JSON: {\"product_summary\": str|null, \"candidates\": "
+        "[{\"hs_code\": str, \"description\": str|null, \"confidence\": number, "
+        "\"reasoning\": str|null}]}"
+    )
+    return [
+        {"role": "system", "content": HS_CLASSIFY_SYSTEM},
+        {"role": "user", "content": user},
+    ]

@@ -42,6 +42,13 @@ ollama pull qwen3:8b
 ollama pull bge-m3
 ```
 
+**First time only** — install backend extras (OCR for scanned PDFs, scraping for tender pulls):
+
+```powershell
+cd e:\mtech\quolate\application\quolate\backend
+.\.venv\Scripts\pip install ".[ocr,scrape]"
+```
+
 **First time only** — apply database migrations:
 
 ```powershell
@@ -151,3 +158,14 @@ ollama pull bge-m3                   # embeddings
 ```
 
 The backend will still start without Ollama, but document ingestion and embedding calls will fail at runtime. Tests use `LLM_BASE_URL=mock` and don't need Ollama.
+
+### `No module named 'paddleocr'` during tender indexing
+
+OCR is an optional dependency. Install it once:
+
+```powershell
+cd e:\mtech\quolate\application\quolate\backend
+.\.venv\Scripts\pip install ".[ocr]"
+```
+
+Restart the backend after installing. Text-based PDFs work without OCR; scanned PDF attachments need PaddleOCR.

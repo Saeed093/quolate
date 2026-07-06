@@ -6,6 +6,7 @@ import { Send, Loader2, Wrench, Bot, User } from "lucide-react";
 import { api, type ChatEvent } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ChatMessageContent } from "@/components/ChatMessageContent";
 import { cn } from "@/lib/utils";
 
 interface UiMessage {
@@ -178,9 +179,11 @@ export function GlobalChatPanel() {
                 </div>
               )}
 
-              <span className="whitespace-pre-wrap">
-                {m.content || (m.streaming ? <TypingDots /> : "")}
-              </span>
+              {m.content ? (
+                <ChatMessageContent content={m.content} />
+              ) : m.streaming ? (
+                <TypingDots />
+              ) : null}
             </div>
           </div>
         ))}

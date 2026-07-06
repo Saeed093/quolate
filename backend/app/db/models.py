@@ -12,9 +12,11 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -391,6 +393,142 @@ class LibraryDocumentComment(UUIDPKMixin, TimestampMixin, Base):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(settings.embedding_dim), nullable=True
     )
+
+
+class DutyTaxRate(UUIDPKMixin, TimestampMixin, Base):
+    """A single dated rate for one levy on one HS code (Pakistan duty engine).
+
+    `hs_code` uses the literal wildcard ``"*"`` for schedules that are not
+    keyed by HS code at all -- e.g. the standard Sales Tax rate, or an ACD/RD
+    slab schedule keyed on the *CD rate bracket* rather than the HS code
+    (see `slab_rules`). `importer_category`/`atl_status` are nullable: a NULL
+    value is the general/default rate, and a specific value only matches an
+    importer who declares that exact category/status (spec section 1, 3).
+
+    Rows are never overwritten -- a rate change inserts a new row and sets
+    `effective_to` (and `superseded_by`) on the old one, so a calculation run
+    with an old `as_of_date` stays reproducible for audit/quoting purposes.
+    """
+
+    __tablename__ = "duty_tax_rates"
+    __table_args__ = (
+        CheckConstraint(
+            "levy_type IN ('CD','ACD','RD','ST','FED','WHT_148')",
+            name="ck_duty_tax_rates_levy_type",
+        ),
+        CheckConstraint(
+            "rate_type IN ('percent','fixed','slab')",
+            name="ck_duty_tax_rates_rate_type",
+        ),
+        CheckConstraint(
+            "atl_status IS NULL OR atl_status IN ('atl','non_atl')",
+            name="ck_duty_tax_rates_atl_status",
+        ),
+        CheckConstraint(
+            "status IN ('pending_review','approved','rejected')",
+            name="ck_duty_tax_rates_status",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_duty_tax_rates_effective_range",
+        ),
+        Index(
+            "ix_duty_tax_rates_hs_levy_effective",
+            "hs_code",
+            "levy_type",
+            "effective_from",
+        ),
+        Index(
+            "ix_duty_tax_rates_current",
+            "hs_code",
+            "levy_type",
+            postgresql_where=text("effective_to IS NULL AND status = 'approved'"),
+        ),
+    )
+
+    hs_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    levy_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    rate_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Fraction for percent rates (0.20 == 20%); PKR amount for fixed rates;
+    # NULL when rate_type == 'slab' (see slab_rules).
+    rate_value: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
+    # rate_type == 'slab': [{cd_rate_min, cd_rate_max, rate, sro_reference?,
+    # legal_reference?, notes?}, ...] -- preserves the source SRO's bracket
+    # logic (e.g. "if CD falls in bracket X, ACD = Y%") instead of collapsing
+    # it into one flat percentage.
+    slab_rules: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    importer_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    atl_status: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    sro_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    legal_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("duty_tax_rates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # pending_review|approved|rejected -- LLM-extracted rates land as
+    # pending_review and must be approved before the resolver will use them.
+    status: Mapped[str] = mapped_column(String(20), default="approved", nullable=False)
+    source_document: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ExemptionRule(UUIDPKMixin, TimestampMixin, Base):
+    """Conditional exemption/reduced-rate rule.
+
+    Unlike `DutyTaxRate`, these are gated on importer category / certificate
+    rather than being a pure HS-code rate lookup (e.g. "industrial
+    undertaking, own use" exemptions from Section 148, or project-specific
+    SRO exemptions requiring an FBR certificate). `hs_code` is nullable
+    because some exemptions apply across an entire certificate scheme rather
+    than a single HS code.
+    """
+
+    __tablename__ = "exemption_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "levy_type IN ('CD','ACD','RD','ST','FED','WHT_148')",
+            name="ck_exemption_rules_levy_type",
+        ),
+        CheckConstraint(
+            "exemption_type IN ('full','reduced_rate')",
+            name="ck_exemption_rules_exemption_type",
+        ),
+        CheckConstraint(
+            "exemption_type <> 'reduced_rate' OR reduced_rate IS NOT NULL",
+            name="ck_exemption_rules_reduced_rate_required",
+        ),
+        CheckConstraint(
+            "status IN ('pending_review','approved','rejected')",
+            name="ck_exemption_rules_status",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_exemption_rules_effective_range",
+        ),
+        Index("ix_exemption_rules_hs_levy", "hs_code", "levy_type"),
+        Index("ix_exemption_rules_importer_category", "importer_category"),
+    )
+
+    hs_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    levy_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    importer_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    certificate_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    requires_certificate: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    exemption_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    reduced_rate: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
+    condition_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sro_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    schedule_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="approved", nullable=False)
+    source_document: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ProjectLibraryDocument(TimestampMixin, Base):

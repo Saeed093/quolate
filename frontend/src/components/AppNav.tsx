@@ -12,6 +12,7 @@ import {
   Landmark,
   Rss,
   FileText,
+  Calculator,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ const LINKS = [
   { href: "/tenders", label: "Tenders", icon: Landmark, exact: true },
   { href: "/tenders/sources", label: "Sources", icon: Rss },
   { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/duty-calculator", label: "Duty Calculator", icon: Calculator },
 ];
 
 function isActive(pathname: string | null, href: string, exact?: boolean) {

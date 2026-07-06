@@ -95,6 +95,7 @@ export default function TendersPage() {
         description:
           "Running in the background — new tenders will appear here as they land. Safe to navigate away.",
       });
+      qc.invalidateQueries({ queryKey: ["activity"] });
       // Refresh the list a few times while the background jobs run.
       setTimeout(() => qc.invalidateQueries({ queryKey: ["tenders"] }), 15_000);
       setTimeout(() => qc.invalidateQueries({ queryKey: ["tenders"] }), 60_000);

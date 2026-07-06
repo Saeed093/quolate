@@ -9,6 +9,7 @@ Usage:
   .\tasks.ps1 revision  # alembic autogenerate revision -m "<msg>"
   .\tasks.ps1 test      # backend pytest (mock LLM)
   .\tasks.ps1 seed      # seed demo user + project
+  .\tasks.ps1 seed-duty # seed illustrative Pakistan duty/tax rates (demo)
 #>
 param(
     [Parameter(Position = 0)]
@@ -54,6 +55,9 @@ switch ($Task) {
     }
     "seed" {
         Invoke-Backend @("python", "-m", "app.scripts.seed")
+    }
+    "seed-duty" {
+        Invoke-Backend @("python", "-m", "app.scripts.seed_duty_rates")
     }
     default {
         Get-Content (Join-Path $root "tasks.ps1") | Select-Object -First 16

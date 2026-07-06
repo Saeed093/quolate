@@ -7,6 +7,7 @@ import { api, type ChatEvent, type MatrixParams } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useChat } from "@/contexts/ChatContext";
+import { ChatMessageContent } from "@/components/ChatMessageContent";
 import { cn } from "@/lib/utils";
 
 interface UiMessage {
@@ -190,9 +191,11 @@ export function ChatPanel({
               )}
 
               {/* Content or typing indicator */}
-              <span className="whitespace-pre-wrap">
-                {m.content || (m.streaming ? <TypingDots /> : "")}
-              </span>
+              {m.content ? (
+                <ChatMessageContent content={m.content} />
+              ) : m.streaming ? (
+                <TypingDots />
+              ) : null}
             </div>
           </div>
         ))}

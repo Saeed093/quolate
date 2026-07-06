@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { GlobalChatDrawer } from "@/components/GlobalChatDrawer";
+import { BackgroundActivityPopup } from "@/components/BackgroundActivityPopup";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -15,6 +16,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <div className="min-w-0 flex-1">{children}</div>
       <GlobalChatDrawer />
+      <BackgroundActivityPopup />
     </div>
   );
 }
