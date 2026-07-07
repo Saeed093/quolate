@@ -1,14 +1,18 @@
 """Pakistan duty/tax calculator router.
 
-Only `GET /duty-calc/{hs_code}` for this session -- batch calc and the admin
-ingestion/review endpoints come once the core schema + calc logic have been
-reviewed (see pakistan-duty-tax-engine-prompt.md).
+Two calculation styles live side by side:
+  - `GET /duty-calc/{hs_code}`: the original single-item statutory stack
+    (DB-resolved rates via `app.duty.calculator`).
+  - `POST /duty-calc/invoice/*`: the clearing-agent sheet workflow -- parse an
+    invoice into line items (LLM), then batch-calculate the sheet's duty
+    stack per item with client-confirmed rates (pure math, no LLM).
 """
 from __future__ import annotations
 
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, model_validator
@@ -18,11 +22,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.db.models import DutyTaxRate, User
 from app.db.session import get_session
+from app.duty import rate_memory
 from app.duty.calculator import calculate_duty
 from app.duty.classifier import ClassificationInputError, classify_hs_code
+from app.duty.invoice_parse import parse_invoice_items
 from app.duty.resolver import GENERAL_HS_CODE
-from app.duty.schemas import AtlStatus, DutyCalculationOut, HsClassificationOut, LevyLineOut
+from app.duty.schemas import (
+    AtlStatus,
+    DutyCalculationOut,
+    FxRateOut,
+    HsClassificationOut,
+    InvoiceCalcIn,
+    InvoiceCalcItemOut,
+    InvoiceCalcOut,
+    InvoiceParseOut,
+    InvoiceTotalsOut,
+    LevyLineOut,
+    RatePrefillOut,
+    SheetLevyLineOut,
+)
+from app.duty.sheet_engine import compute_invoice_sheet_duty
 from app.llm.json_enforce import SchemaEnforceError
+from app.matrix.fx_live import get_pkr_rate
 
 router = APIRouter(tags=["duty"])
 
@@ -59,6 +80,38 @@ async def list_duty_hs_codes(
         stmt = stmt.where(DutyTaxRate.hs_code.ilike(f"%{q}%"))
     result = await session.execute(stmt.limit(50))
     return list(result.scalars().all())
+
+
+# NOTE: declared before `GET /duty-calc/{hs_code}` -- FastAPI matches routes
+# in declaration order and the path-param route would swallow this one.
+@router.get("/duty-calc/fx-rate", response_model=FxRateOut)
+async def get_fx_rate(
+    currency: Literal["USD", "CNY"] = Query(...),
+    user: User = Depends(get_current_user),
+) -> FxRateOut:
+    """Today's PKR rate for the invoice calculator (live, static fallback).
+
+    Open-market, not the FBR customs-notified rate -- the UI labels the
+    source and keeps the field editable.
+    """
+    fx = await get_pkr_rate(currency)
+    return FxRateOut(
+        currency=fx.currency, rate=fx.rate, as_of_date=fx.as_of_date, source=fx.source
+    )
+
+
+@router.get("/duty-calc/rate-prefill/{hs_code}", response_model=RatePrefillOut)
+async def get_rate_prefill(
+    hs_code: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RatePrefillOut:
+    """Editable-rate prefill for one HS code: the user's remembered rates,
+    else an approved `duty_tax_rates` row, else the sheet defaults."""
+    rates, sources = await rate_memory.get_rate_prefill(
+        session, owner_id=user.id, hs_code=hs_code
+    )
+    return RatePrefillOut(hs_code=hs_code.strip(), rates=rates, sources=sources)
 
 
 @router.get("/duty-calc/{hs_code}", response_model=DutyCalculationOut)
@@ -143,3 +196,127 @@ async def classify_duty_hs_code(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SchemaEnforceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/duty-calc/invoice/parse", response_model=InvoiceParseOut)
+async def parse_invoice(
+    body: ClassifyRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvoiceParseOut:
+    """Extract line items (+ currency/freight) from an invoice or quotation.
+
+    One LLM call; per-item HS classification is a separate follow-up via
+    `POST /duty-calc/classify` with each item's description as `text`.
+    """
+    try:
+        return await parse_invoice_items(
+            session,
+            text=body.text,
+            library_document_id=body.library_document_id,
+            owner_id=user.id,
+        )
+    except ClassificationInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SchemaEnforceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/duty-calc/invoice/calculate", response_model=InvoiceCalcOut)
+async def calculate_invoice(
+    body: InvoiceCalcIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> InvoiceCalcOut:
+    """Batch sheet-style duty calculation -- pure math, no LLM.
+
+    Rates arrive from the client exactly as the user confirmed them; when
+    `save_rates` is set they are remembered per HS code for future prefill.
+    """
+    breakdown = compute_invoice_sheet_duty(
+        items=[
+            {
+                "description": item.description,
+                "hs_code": item.hs_code,
+                "quantity": item.quantity,
+                "unit_price": item.unit_price,
+                "line_total": item.line_total,
+                "rates": item.rates.model_dump(),
+                "fed_amount_pkr": item.fed_amount_pkr,
+            }
+            for item in body.items
+        ],
+        currency=body.currency,
+        fx_rate=body.fx_rate,
+        freight=body.freight,
+        insurance_pct=body.insurance_pct,
+        landing_pct=body.landing_pct,
+        afu_pct=body.fees.afu_pct,
+        afu_fixed_pkr=body.fees.afu_fixed_pkr,
+        stamp_fee_pkr=body.fees.stamp_fee_pkr,
+        psw_fee_pkr=body.fees.psw_fee_pkr,
+    )
+
+    if body.save_rates:
+        # Dedupe by HS code; the last item's rates win.
+        by_hs = {
+            item.hs_code.strip(): {
+                **item.rates.model_dump(),
+                "fed_amount_pkr": item.fed_amount_pkr,
+            }
+            for item in body.items
+        }
+        for hs_code, rates in by_hs.items():
+            await rate_memory.remember_rates(
+                session, owner_id=user.id, hs_code=hs_code, rates=rates
+            )
+        await session.commit()
+
+    return InvoiceCalcOut(
+        currency=breakdown.currency,
+        fx_rate=breakdown.fx_rate,
+        fx_rate_date=body.fx_rate_date,
+        items=[
+            InvoiceCalcItemOut(
+                description=item.description,
+                hs_code=item.hs_code,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                line_total=item.line_total,
+                freight_allocated=item.freight_allocated,
+                cf_value=item.cf_value,
+                cf_value_pkr=item.cf_value_pkr,
+                insurance_pkr=item.insurance_pkr,
+                landing_pkr=item.landing_pkr,
+                import_value_pkr=item.import_value_pkr,
+                levies=[
+                    SheetLevyLineOut(
+                        levy_type=line.levy_type,
+                        label=line.label,
+                        rate=line.rate,
+                        basis_pkr=line.basis_pkr,
+                        amount_pkr=line.amount_pkr,
+                    )
+                    for line in item.lines
+                ],
+                customs_subtotal_pkr=item.customs_subtotal_pkr,
+                ait_pkr=item.ait_pkr,
+                item_duty_total_pkr=item.item_duty_total_pkr,
+            )
+            for item in breakdown.items
+        ],
+        totals=InvoiceTotalsOut(
+            invoice_value=breakdown.invoice_value,
+            freight=breakdown.freight,
+            cf_value_pkr=breakdown.cf_value_pkr,
+            import_value_pkr=breakdown.import_value_pkr,
+            customs_subtotal_pkr=breakdown.customs_subtotal_pkr,
+            ait_pkr=breakdown.ait_pkr,
+            customs_total_pkr=breakdown.customs_total_pkr,
+            afu_pkr=breakdown.afu_pkr,
+            stamp_fee_pkr=breakdown.stamp_fee_pkr,
+            psw_fee_pkr=breakdown.psw_fee_pkr,
+            total_payable_pkr=breakdown.total_payable_pkr,
+            landed_cleared_price_pkr=breakdown.landed_cleared_price_pkr,
+        ),
+    )

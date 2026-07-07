@@ -66,6 +66,69 @@ def build_extraction_messages(bom_lines: list[dict], chunk_text: str) -> list[di
     ]
 
 
+# Amounts are extracted as VERBATIM STRINGS, not numbers: suppliers mix
+# decimal/thousands conventions ("$27.500" meaning 27.50, "8,770.000" meaning
+# 8770.00) and an LLM asked to emit plain numbers silently drops or misreads
+# the separators. The server parses the verbatim strings deterministically
+# (see app.duty.invoice_parse), cross-checking qty x unit_price = line_total.
+INVOICE_ITEMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "invoice_currency": {"type": ["string", "null"]},
+        "freight": {"type": ["number", "string", "null"]},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line_no": {"type": ["integer", "null"]},
+                    "description": {"type": "string"},
+                    "quantity": {"type": ["number", "string", "null"]},
+                    "unit": {"type": ["string", "null"]},
+                    "unit_price": {"type": ["number", "string", "null"]},
+                    "line_total": {"type": ["number", "string", "null"]},
+                },
+                "required": ["description"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    "required": ["items"],
+    "additionalProperties": True,
+}
+
+INVOICE_ITEMS_SYSTEM = (
+    "You are a precise invoice/quotation line-item extraction engine. "
+    "Extract each distinct PRODUCT line from the document text: description, "
+    "quantity, unit, unit_price, line_total. "
+    "Copy quantity, unit_price and line_total EXACTLY as written in the "
+    "document, as strings -- keep every digit, comma, dot and currency "
+    "symbol unchanged (e.g. \"$27.500\", \"8,770.00\"). Do NOT reformat, "
+    "convert, round or strip separators; the caller parses them. "
+    "Do NOT emit subtotal, total, tax, discount, freight or shipping rows as "
+    "items -- if a freight/shipping charge appears, report its amount "
+    "(verbatim string) in the top-level 'freight' field instead. Report the "
+    "invoice currency as an ISO code (e.g. USD, CNY) in 'invoice_currency'. "
+    "Extract at most 20 items. Only report what is present in the text. "
+    "Return ONLY JSON matching the schema, no prose."
+)
+
+
+def build_invoice_items_messages(text: str) -> list[dict]:
+    user = (
+        f"Document text:\n\"\"\"\n{text}\n\"\"\"\n\n"
+        "Return JSON: {\"invoice_currency\": str|null, \"freight\": str|null, "
+        "\"items\": [{\"line_no\": int|null, \"description\": str, "
+        "\"quantity\": str|null, \"unit\": str|null, "
+        "\"unit_price\": str|null, \"line_total\": str|null}]} "
+        "with amounts copied verbatim from the document."
+    )
+    return [
+        {"role": "system", "content": INVOICE_ITEMS_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+
+
 HS_CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {

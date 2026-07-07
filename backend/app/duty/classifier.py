@@ -32,10 +32,17 @@ class ClassificationInputError(Exception):
     """Bad input (no text/doc given, doc missing, doc has no text)."""
 
 
-async def _load_document_text(
-    session: AsyncSession, library_document_id: uuid.UUID, owner_id: uuid.UUID
+async def load_document_text(
+    session: AsyncSession,
+    library_document_id: uuid.UUID,
+    owner_id: uuid.UUID,
+    *,
+    text_budget: int = TEXT_BUDGET,
 ) -> str:
     """Re-extract text for an already-stored library document.
+
+    Shared with `app.duty.invoice_parse` (which passes a larger budget --
+    invoice tables run wider than classification snippets).
 
     No full-text column exists on `LibraryDocument`/`LibraryDocumentEmbedding`
     (only chunk embeddings are persisted), so re-extraction from the stored
@@ -64,7 +71,7 @@ async def _load_document_text(
     text = content.full_text.strip()
     if not text:
         raise ClassificationInputError("No text could be extracted from this document.")
-    return text[:TEXT_BUDGET]
+    return text[:text_budget]
 
 
 async def _known_hs_codes(session: AsyncSession) -> list[str]:
@@ -97,7 +104,7 @@ async def classify_hs_code(
             raise ClassificationInputError(
                 "owner_id is required when classifying from a library document."
             )
-        resolved_text = await _load_document_text(session, library_document_id, owner_id)
+        resolved_text = await load_document_text(session, library_document_id, owner_id)
     elif text is not None and text.strip():
         resolved_text = text.strip()[:TEXT_BUDGET]
     else:

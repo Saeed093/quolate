@@ -357,6 +357,131 @@ export interface ClassifyHsCodeParams {
   text?: string;
 }
 
+// ---- Invoice duty calculator (clearing-agent sheet workflow) ----
+export type SheetLevyType = "CD" | "ACD" | "RD" | "ST" | "AST" | "FED" | "AIT";
+export type InvoiceCurrency = "USD" | "CNY";
+export type RateSource = "memory" | "approved_rate" | "default";
+
+export interface ParsedInvoiceItem {
+  line_no: number | null;
+  description: string;
+  quantity: string | null;
+  unit: string | null;
+  unit_price: string | null;
+  line_total: string | null;
+}
+
+export interface InvoiceParseResult {
+  invoice_currency: string | null;
+  freight: string;
+  items: ParsedInvoiceItem[];
+  disclaimer: string;
+}
+
+/** Fractions as strings, e.g. "0.05" == 5%. */
+export interface ItemRates {
+  cd: string;
+  acd: string;
+  rd: string;
+  st: string;
+  ast: string;
+  ait: string;
+}
+
+export interface InvoiceCalcItemRequest {
+  description: string;
+  quantity?: string | null;
+  unit?: string | null;
+  unit_price?: string | null;
+  line_total?: string | null;
+  hs_code: string;
+  rates: ItemRates;
+  fed_amount_pkr?: string;
+}
+
+export interface InvoiceFees {
+  afu_pct: string;
+  afu_fixed_pkr: string;
+  stamp_fee_pkr: string;
+  psw_fee_pkr: string;
+}
+
+export interface InvoiceCalcRequest {
+  currency: InvoiceCurrency;
+  fx_rate: string;
+  fx_rate_date?: string | null;
+  freight?: string;
+  insurance_pct?: string;
+  landing_pct?: string;
+  items: InvoiceCalcItemRequest[];
+  fees?: InvoiceFees;
+  save_rates?: boolean;
+}
+
+export interface SheetLevyLine {
+  levy_type: SheetLevyType;
+  label: string;
+  rate: string;
+  basis_pkr: string;
+  amount_pkr: string;
+}
+
+export interface InvoiceCalcItemResult {
+  description: string;
+  hs_code: string;
+  quantity: string | null;
+  unit_price: string | null;
+  line_total: string;
+  freight_allocated: string;
+  cf_value: string;
+  cf_value_pkr: string;
+  insurance_pkr: string;
+  landing_pkr: string;
+  import_value_pkr: string;
+  levies: SheetLevyLine[];
+  customs_subtotal_pkr: string;
+  ait_pkr: string;
+  item_duty_total_pkr: string;
+}
+
+export interface InvoiceTotals {
+  invoice_value: string;
+  freight: string;
+  cf_value_pkr: string;
+  import_value_pkr: string;
+  customs_subtotal_pkr: string;
+  ait_pkr: string;
+  customs_total_pkr: string;
+  afu_pkr: string;
+  stamp_fee_pkr: string;
+  psw_fee_pkr: string;
+  total_payable_pkr: string;
+  landed_cleared_price_pkr: string;
+}
+
+export interface InvoiceCalcResult {
+  currency: string;
+  fx_rate: string;
+  fx_rate_date: string | null;
+  items: InvoiceCalcItemResult[];
+  totals: InvoiceTotals;
+  disclaimer: string;
+}
+
+export interface RatePrefill {
+  hs_code: string;
+  rates: Record<string, string>;
+  sources: Record<string, RateSource>;
+}
+
+export interface FxRate {
+  currency: string;
+  quote: string;
+  rate: string;
+  as_of_date: string;
+  source: "live" | "static";
+}
+
 export interface SavedFilter {
   id: string;
   name: string;
@@ -795,6 +920,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }),
+  parseInvoice: (params: ClassifyHsCodeParams) =>
+    request<InvoiceParseResult>(`/duty-calc/invoice/parse`, {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+  invoiceDutyCalc: (body: InvoiceCalcRequest) =>
+    request<InvoiceCalcResult>(`/duty-calc/invoice/calculate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  ratePrefill: (hsCode: string) =>
+    request<RatePrefill>(`/duty-calc/rate-prefill/${encodeURIComponent(hsCode)}`),
+  fxRate: (currency: InvoiceCurrency) =>
+    request<FxRate>(`/duty-calc/fx-rate${qs({ currency })}`),
 
   // Saved filters
   listSavedFilters: () => request<SavedFilter[]>("/saved-filters"),

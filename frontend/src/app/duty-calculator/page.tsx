@@ -41,28 +41,15 @@ import {
 } from "@/components/ui/table";
 import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
-
-function formatPkr(value: string | number): string {
-  const n = typeof value === "string" ? Number(value) : value;
-  if (Number.isNaN(n)) return "—";
-  return new Intl.NumberFormat("en-PK", {
-    style: "currency",
-    currency: "PKR",
-    maximumFractionDigits: 2,
-  }).format(n);
-}
-
-function formatRate(rate: string, rateType: string): string {
-  const n = Number(rate);
-  if (Number.isNaN(n)) return "—";
-  if (rateType === "fixed") return formatPkr(n);
-  return `${(n * 100).toFixed(2)}%`;
-}
+import { CandidateButtons } from "./candidates";
+import { formatPkr, formatRate } from "./format";
+import { InvoiceTab } from "./invoice-tab";
 
 export default function DutyCalculatorPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const formRef = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<"single" | "invoice">("single");
 
   // ---- Form state ----
   const [hsCode, setHsCode] = useState("");
@@ -196,7 +183,12 @@ export default function DutyCalculatorPage() {
   return (
     <div className="min-h-screen">
       <AppNav />
-      <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6">
+      <main
+        className={cn(
+          "mx-auto px-4 py-6 sm:px-6",
+          mode === "invoice" ? "max-w-6xl" : "max-w-4xl",
+        )}
+      >
         <div className="mb-1 flex items-center gap-2">
           <Calculator className="h-5 w-5 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -204,9 +196,9 @@ export default function DutyCalculatorPage() {
           </h1>
         </div>
         <p className="mb-4 text-sm text-muted-foreground">
-          Full landed-cost breakdown for a PCT/HS code: Customs Duty, Additional
-          Customs Duty, Regulatory Duty, Sales Tax, Federal Excise Duty, and
-          advance Income Tax withholding under Section 148.
+          Full landed-cost breakdown: Customs Duty, Additional Customs Duty,
+          Regulatory Duty, Sales Tax, Additional Sales Tax, FED, and advance
+          Income Tax — for a single HS code or a whole invoice, item by item.
         </p>
 
         <div className="mb-6 flex items-start gap-2 rounded-xl border border-verify/30 bg-verify/10 px-3.5 py-3 text-xs text-foreground">
@@ -219,6 +211,20 @@ export default function DutyCalculatorPage() {
           </p>
         </div>
 
+        <Tabs
+          value={mode}
+          onValueChange={(v) => setMode(v as "single" | "invoice")}
+        >
+          <TabsList className="mb-4">
+            <TabsTrigger value="single">Single item</TabsTrigger>
+            <TabsTrigger value="invoice">Invoice / multi-item</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="invoice">
+            <InvoiceTab />
+          </TabsContent>
+
+          <TabsContent value="single">
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -331,34 +337,10 @@ export default function DutyCalculatorPage() {
                     the HS code manually.
                   </p>
                 ) : (
-                  classification.candidates.map((c, i) => {
-                    const lowConfidence = c.confidence < 0.5;
-                    return (
-                      <button
-                        key={`${c.hs_code}-${i}`}
-                        type="button"
-                        onClick={() => applyCandidate(c)}
-                        className="flex items-start justify-between gap-3 rounded-xl border border-border/70 px-3.5 py-2.5 text-left transition-colors hover:border-primary/50 hover:bg-accent"
-                      >
-                        <div className="flex flex-col gap-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-sm font-semibold">
-                              {c.hs_code}
-                            </span>
-                            <Badge variant={lowConfidence ? "verify" : "ok"} className="text-[10px]">
-                              {Math.round(c.confidence * 100)}% confidence
-                            </Badge>
-                          </div>
-                          {c.description && (
-                            <p className="text-xs text-muted-foreground">{c.description}</p>
-                          )}
-                          {c.reasoning && (
-                            <p className="text-[11px] text-muted-foreground">{c.reasoning}</p>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })
+                  <CandidateButtons
+                    candidates={classification.candidates}
+                    onPick={applyCandidate}
+                  />
                 )}
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   {classification.disclaimer}
@@ -517,6 +499,8 @@ export default function DutyCalculatorPage() {
         </Card>
 
         {result && <ResultCard result={result} runningRows={runningRows} />}
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   );

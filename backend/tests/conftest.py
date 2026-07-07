@@ -86,6 +86,7 @@ def _clean_tables(_prepare_database):
 
     yield
     tables = [
+        "hs_rate_memory",
         "exemption_rules",
         "duty_tax_rates",
         "saved_filters",

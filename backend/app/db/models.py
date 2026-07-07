@@ -531,6 +531,32 @@ class ExemptionRule(UUIDPKMixin, TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class HsRateMemory(UUIDPKMixin, TimestampMixin, Base):
+    """Per-user remembered duty rates for one HS code (invoice calculator).
+
+    Unlike `DutyTaxRate` (global, dated, review-gated, statutory levy types
+    only), this is a lightweight owner-scoped prefill memory: whenever the
+    user runs an invoice calculation, the rates they confirmed for each HS
+    code are upserted here and offered as the prefill next time that code
+    appears. `rates` holds fractions keyed cd/acd/rd/st/ast/ait plus
+    fed_amount_pkr (a PKR amount, not a rate).
+    """
+
+    __tablename__ = "hs_rate_memory"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "hs_code", name="uq_hs_rate_memory_owner_hs"),
+        Index("ix_hs_rate_memory_owner", "owner_id"),
+    )
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # Wider than duty_tax_rates.hs_code(10): the classifier can emit longer
+    # dotted PCT codes and this column stores them verbatim.
+    hs_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    rates: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
 class ProjectLibraryDocument(TimestampMixin, Base):
     """Link table: library documents attached to a project."""
 

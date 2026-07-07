@@ -1,6 +1,0 @@
-Commercial Invoice
-Product: Smartphone, Android OS, 6.5-inch AMOLED display, 6GB RAM, 128GB storage, dual SIM, 5000mAh battery.
-Quantity: 200 units
-Unit Price: USD 120.00
-Total: USD 24,000.00
-Country of Origin: China
