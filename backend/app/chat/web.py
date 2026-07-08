@@ -24,6 +24,21 @@ class WebClient(Protocol):
 
 class DefaultWebClient:
     def search(self, query: str, max_results: int = 5) -> list[dict]:
+        # DuckDuckGo rate-limits scrapers; transient failures are common, so
+        # retry once with a short backoff before giving up.
+        import time
+
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            if attempt:
+                time.sleep(2)
+            try:
+                return self._search_once(query, max_results)
+            except Exception as exc:
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
+
+    def _search_once(self, query: str, max_results: int) -> list[dict]:
         from ddgs import DDGS
 
         results: list[dict] = []

@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { UploadCloud, FileText, Library, X } from "lucide-react";
+import { UploadCloud, FileText, Library, X, RotateCcw } from "lucide-react";
 import { api, type Document, type LibraryDocument } from "@/lib/api";
 import { useActivity } from "@/contexts/ActivityContext";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +44,7 @@ export function InboxTab({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryFilter, setLibraryFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const notifiedAutoBom = useRef<Set<string>>(new Set());
 
   const docs = useQuery({
     queryKey: ["documents", projectId],
@@ -55,6 +56,17 @@ export function InboxTab({
       );
       return busy ? 2000 : false;
     },
+  });
+
+  const reparse = useMutation({
+    mutationFn: (docId: string) => api.reparseDocument(docId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["documents", projectId] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+      toast({ title: "Re-parsing document…" });
+    },
+    onError: () =>
+      toast({ title: "Could not re-parse", variant: "destructive" }),
   });
 
   const upload = useMutation({
@@ -88,7 +100,7 @@ export function InboxTab({
 
   const libraryDocs = useQuery({
     queryKey: ["library-documents"],
-    queryFn: api.listLibraryDocuments,
+    queryFn: () => api.listLibraryDocuments(),
     enabled: libraryOpen,
   });
 
@@ -163,7 +175,22 @@ export function InboxTab({
   );
   useEffect(() => {
     qc.invalidateQueries({ queryKey: ["matrix", projectId] });
+    qc.invalidateQueries({ queryKey: ["bom", projectId] });
   }, [parsedCount, projectId, qc]);
+
+  // Toast once when a document auto-creates BOM lines from a quotation.
+  useEffect(() => {
+    for (const d of docs.data ?? []) {
+      const n = d.auto_bom_created ?? 0;
+      if (n > 0 && !notifiedAutoBom.current.has(d.id)) {
+        notifiedAutoBom.current.add(d.id);
+        toast({
+          title: `Created ${n} BOM line(s) from ${d.original_filename}`,
+          description: "Open the BOM or Matrix tab to review.",
+        });
+      }
+    }
+  }, [docs.data]);
 
   const grouped = useMemo(() => groupBySupplier(docs.data ?? []), [docs.data]);
 
@@ -172,8 +199,8 @@ export function InboxTab({
       <div
         {...getRootProps()}
         className={cn(
-          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-card/60 px-4 py-10 text-center transition-all hover:border-primary/40 hover:bg-accent/40",
-          isDragActive && "border-primary bg-accent/60 shadow-glow",
+          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-card/60 px-4 py-10 text-center transition-all hover:border-teal/40 hover:bg-accent/40",
+          isDragActive && "border-teal bg-teal/5 shadow-soft",
         )}
       >
         <input {...getInputProps()} />
@@ -181,7 +208,8 @@ export function InboxTab({
           <UploadCloud className="h-5 w-5 text-accent-foreground" />
         </div>
         <p className="text-sm">
-          Drop PDFs, images, Excel, or WhatsApp export zips here, or click to browse.
+          Drop vendor quotations here — BOM lines are created automatically when
+          your project has none yet.
         </p>
         <p className="text-xs text-muted-foreground">
           You can also paste a screenshot anywhere on this page.
@@ -247,27 +275,51 @@ export function InboxTab({
           </h3>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {items.map((d) => (
-              <button
+              <div
                 key={d.id}
-                onClick={() => setReviewDocId(d.id)}
-                className="card-interactive flex items-start gap-3 rounded-xl border border-border/60 bg-card p-3 text-left shadow-soft"
+                className="card-interactive flex items-start gap-3 rounded-xl border border-border/60 bg-card p-3 shadow-soft"
               >
-                <FileText className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">
-                    {d.original_filename}
+                <button
+                  type="button"
+                  onClick={() => setReviewDocId(d.id)}
+                  className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                >
+                  <FileText className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">
+                      {d.original_filename}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <Badge variant={STATUS_VARIANT[d.status] ?? "secondary"}>
+                        {d.status.replace("_", " ")}
+                      </Badge>
+                      {(d.auto_bom_created ?? 0) > 0 && (
+                        <Badge variant="ok">+{d.auto_bom_created} BOM</Badge>
+                      )}
+                      <span className="text-xs text-muted-foreground">{d.kind}</span>
+                    </div>
+                    {d.error && (
+                      <div className="mt-1 truncate text-xs text-gap">{d.error}</div>
+                    )}
                   </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Badge variant={STATUS_VARIANT[d.status] ?? "secondary"}>
-                      {d.status.replace("_", " ")}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">{d.kind}</span>
-                  </div>
-                  {d.error && (
-                    <div className="mt-1 truncate text-xs text-gap">{d.error}</div>
-                  )}
-                </div>
-              </button>
+                </button>
+                {(d.status === "failed" ||
+                  (d.status === "needs_review" && d.error)) && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8 shrink-0"
+                    aria-label="Retry parsing"
+                    disabled={reparse.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      reparse.mutate(d.id);
+                    }}
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
             ))}
           </div>
         </div>

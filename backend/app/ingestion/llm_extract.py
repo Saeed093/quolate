@@ -32,8 +32,10 @@ def extract_fields(bom_lines: list[dict], full_text: str) -> dict:
     chunks = _chunk_text(full_text, max_chars)
 
     merged_fields: list[dict] = []
+    merged_line_items: list[dict] = []
     supplier_name: str | None = None
     currency: str | None = None
+    seen_lines: set[int] = set()
 
     for chunk in chunks:
         messages = build_extraction_messages(bom_lines, chunk)
@@ -48,6 +50,15 @@ def extract_fields(bom_lines: list[dict], full_text: str) -> dict:
             result = {"fields": result}
         supplier_name = supplier_name or result.get("supplier_name")
         currency = currency or result.get("currency")
+        for item in result.get("line_items", []) or []:
+            if not isinstance(item, dict) or not item.get("part_name"):
+                continue
+            line_no = item.get("line_no")
+            key = int(line_no) if line_no is not None else len(merged_line_items) + 1
+            if key in seen_lines:
+                continue
+            seen_lines.add(key)
+            merged_line_items.append(item)
         for f in result.get("fields", []) or []:
             if isinstance(f, dict) and f.get("field_type"):
                 merged_fields.append(f)
@@ -55,5 +66,6 @@ def extract_fields(bom_lines: list[dict], full_text: str) -> dict:
     return {
         "supplier_name": supplier_name,
         "currency": currency,
+        "line_items": merged_line_items,
         "fields": merged_fields,
     }

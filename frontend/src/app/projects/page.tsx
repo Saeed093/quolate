@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, FolderOpen, ArrowRight } from "lucide-react";
 import { api, ApiError, getToken } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppNav";
+import { DeleteProjectButton } from "@/components/DeleteProjectButton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -37,11 +38,10 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="min-h-screen">
-      <AppNav />
+    <AppShell>
       <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Projects</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Your sourcing workbenches
           </p>
@@ -64,7 +64,7 @@ export default function ProjectsPage() {
             <Button
               type="submit"
               disabled={create.isPending}
-              className="shrink-0 gap-1.5 rounded-xl gradient-primary text-white hover:shadow-glow"
+              className="shrink-0 gap-1.5 rounded-xl"
             >
               <Plus className="h-4 w-4" />
               Create
@@ -87,8 +87,8 @@ export default function ProjectsPage() {
               className="card-interactive group flex cursor-pointer items-center gap-3 p-4"
               onClick={() => router.push(`/projects/${p.id}`)}
             >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent transition-colors group-hover:gradient-primary">
-                <FolderOpen className="h-[18px] w-[18px] text-accent-foreground transition-colors group-hover:text-white" />
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent transition-colors group-hover:bg-ink-deep">
+                <FolderOpen className="h-[18px] w-[18px] text-accent-foreground transition-colors group-hover:text-paper" />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{p.name}</div>
@@ -96,7 +96,14 @@ export default function ProjectsPage() {
                   {p.base_currency} · {p.status}
                 </div>
               </div>
-              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-primary" />
+              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-teal" />
+              <DeleteProjectButton
+                projectId={p.id}
+                projectName={p.name}
+                onDeleted={() =>
+                  qc.invalidateQueries({ queryKey: ["projects"] })
+                }
+              />
             </Card>
           ))}
         </div>
@@ -113,6 +120,6 @@ export default function ProjectsPage() {
           </div>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }

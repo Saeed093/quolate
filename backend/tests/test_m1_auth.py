@@ -66,6 +66,45 @@ def test_user_cannot_read_others_project(client):
     assert all(p["id"] != project_id for p in listing.json())
 
 
+def test_delete_project_removes_all_associated_data(auth_client):
+    import asyncio
+    import json
+
+    from app.jobs.worker import drain
+    from app.llm.mock import queue_responses
+
+    pid = auth_client.post("/projects", json={"name": "To Delete"}).json()["id"]
+    auth_client.post(f"/projects/{pid}/bom", json={"part_name": "Widget"})
+    queue_responses(
+        json.dumps(
+            {
+                "supplier_name": "ACME",
+                "line_items": [{"line_no": 1, "part_name": "Widget", "unit_price": 9}],
+                "fields": [
+                    {
+                        "bom_line_no": 1,
+                        "field_type": "unit_price",
+                        "value_num": 9,
+                        "confidence": 0.9,
+                        "source_snippet": "Widget 9",
+                    }
+                ],
+            }
+        )
+    )
+    auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("q.txt", b"Widget 9 USD", "text/plain"))],
+    )
+    assert asyncio.run(drain()) >= 1
+
+    resp = auth_client.delete(f"/projects/{pid}")
+    assert resp.status_code == 204
+    assert auth_client.get(f"/projects/{pid}").status_code == 404
+    assert auth_client.get(f"/projects/{pid}/bom").status_code == 404
+    assert auth_client.get(f"/projects/{pid}/documents").status_code == 404
+
+
 def test_bom_tsv_paste_parses_quantities_and_prices(auth_client):
     project = auth_client.post("/projects", json={"name": "P"}).json()
     pid = project["id"]

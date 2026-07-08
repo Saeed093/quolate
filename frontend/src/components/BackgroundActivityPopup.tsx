@@ -35,7 +35,7 @@ export function BackgroundActivityPopup() {
         {uploads.map((u) => (
           <li key={u.id} className="px-3 py-2.5">
             <div className="flex items-start gap-2">
-              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-teal" />
               <div className="min-w-0 flex-1 space-y-1.5">
                 <p className="text-sm leading-tight">{u.label}</p>
                 {u.percent !== null && (
@@ -48,7 +48,7 @@ export function BackgroundActivityPopup() {
                     </div>
                     <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                       <div
-                        className="h-full rounded-full bg-primary transition-all duration-200"
+                        className="h-full rounded-full bg-teal transition-all duration-200"
                         style={{ width: `${u.percent}%` }}
                       />
                     </div>
@@ -62,7 +62,7 @@ export function BackgroundActivityPopup() {
         {processing > 0 && (
           <li className="px-3 py-2.5">
             <div className="flex items-center gap-2">
-              <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <FileText className="h-3.5 w-3.5 shrink-0 text-teal" />
               <p className="text-sm">
                 Processing {processing} document
                 {processing === 1 ? "" : "s"}…
@@ -80,7 +80,7 @@ export function BackgroundActivityPopup() {
         {pulls.map((p) => (
           <li key={p.source_id} className="px-3 py-2.5">
             <div className="flex items-center gap-2">
-              <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+              <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin text-teal" />
               <p className="min-w-0 truncate text-sm">
                 Pulling tenders from {p.source_name}
                 {p.status === "queued" ? " (queued)" : ""}

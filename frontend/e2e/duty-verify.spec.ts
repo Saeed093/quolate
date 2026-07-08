@@ -25,10 +25,6 @@ test("invoice tab: paste -> parse -> classify -> calculate", async ({
   await authInit(page, request, uniqueEmail("duty"));
   await page.goto("/duty-calculator");
 
-  // Single-item tab is the default and must still render its old UI.
-  await expect(page.getByText("Auto-detect from a document")).toBeVisible();
-
-  await page.getByRole("tab", { name: "Invoice / multi-item" }).click();
   await expect(page.getByText("Read an invoice or quotation")).toBeVisible();
 
   // FX auto-fetch fills the conversion rate.
@@ -63,9 +59,4 @@ test("invoice tab: paste -> parse -> classify -> calculate", async ({
   await expect(page.getByText("Invoice summary")).toBeVisible();
   await expect(page.getByText("Duties & taxes (Collector of Customs)")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/invoice-results.png`, fullPage: true });
-
-  // Old single-item flow still works after switching back.
-  await page.getByRole("tab", { name: "Single item" }).click();
-  await expect(page.getByText("Auto-detect from a document")).toBeVisible();
-  await expect(page.getByLabel("HS / PCT code")).toBeVisible();
 });

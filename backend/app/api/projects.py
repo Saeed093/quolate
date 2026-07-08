@@ -1,6 +1,7 @@
 """Projects router (owner-scoped CRUD)."""
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -12,8 +13,22 @@ from app.auth.deps import get_current_user
 from app.db.models import Project, User
 from app.db.session import get_session
 from app.schemas import ProjectCreate, ProjectOut, ProjectUpdate
+from app.storage import storage
+from app.storage.local import LocalDiskStorage
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+async def _delete_project_storage(project_id: uuid.UUID) -> None:
+    """Remove uploaded files and page caches for a project."""
+    if not isinstance(storage, LocalDiskStorage):
+        return
+    prefix = f"projects/{project_id}"
+
+    def _rm() -> None:
+        storage.delete_prefix(prefix)
+
+    await asyncio.to_thread(_rm)
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -79,5 +94,6 @@ async def delete_project(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     project = await get_owned_project(project_id, user, session)
+    await _delete_project_storage(project_id)
     await session.delete(project)
     await session.commit()

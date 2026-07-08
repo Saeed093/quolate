@@ -5,9 +5,11 @@ import asyncio
 import hashlib
 import logging
 import uuid
+from collections import defaultdict
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import get_owned_project
@@ -16,10 +18,12 @@ from app.db.models import (
     LibraryDocument,
     LibraryDocumentComment,
     LibraryDocumentEmbedding,
+    Project,
     ProjectLibraryDocument,
     User,
 )
 from app.db.session import get_session
+from app.library.quota import library_quota_bytes, library_usage_bytes
 from app.storage import storage
 
 log = logging.getLogger("quolate.api.library")
@@ -53,6 +57,69 @@ def _infer_kind(filename: str, mime_type: str | None = None) -> str:
     return "other"
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: list[uuid.UUID] = Field(..., min_length=1)
+
+
+async def _project_links_by_doc(
+    session: AsyncSession, owner_id: uuid.UUID, doc_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[dict]]:
+    if not doc_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                ProjectLibraryDocument.library_document_id,
+                Project.id,
+                Project.name,
+            )
+            .join(Project, Project.id == ProjectLibraryDocument.project_id)
+            .where(
+                Project.owner_id == owner_id,
+                ProjectLibraryDocument.library_document_id.in_(doc_ids),
+            )
+            .order_by(Project.name)
+        )
+    ).all()
+    out: dict[uuid.UUID, list[dict]] = defaultdict(list)
+    for lib_id, pid, pname in rows:
+        out[lib_id].append({"id": str(pid), "name": pname})
+    return out
+
+
+async def _delete_library_document_record(
+    session: AsyncSession, doc: LibraryDocument
+) -> None:
+    try:
+        await asyncio.to_thread(storage.delete, doc.storage_key)
+    except Exception as exc:
+        log.warning("storage delete failed for %s: %s", doc.storage_key, exc)
+    await session.delete(doc)
+
+
+@router.get("/quota")
+async def library_storage_quota(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Current library storage usage vs per-user quota."""
+    used = await library_usage_bytes(session, user.id)
+    count = (
+        await session.execute(
+            select(func.count()).select_from(LibraryDocument).where(
+                LibraryDocument.owner_id == user.id
+            )
+        )
+    ).scalar_one()
+    limit = library_quota_bytes()
+    return {
+        "used_bytes": used,
+        "limit_bytes": limit,
+        "document_count": int(count or 0),
+        "remaining_bytes": max(0, limit - used),
+    }
+
+
 @router.post("/documents")
 async def upload_library_documents(
     files: list[UploadFile] = File(...),
@@ -63,6 +130,8 @@ async def upload_library_documents(
     from app.jobs import queue
 
     results = {"created": [], "skipped": [], "errors": []}
+    quota_limit = library_quota_bytes()
+    quota_label_mb = quota_limit // (1024 * 1024)
 
     for file in files:
         if not file.filename:
@@ -82,6 +151,7 @@ async def upload_library_documents(
 
         try:
             content = await file.read()
+            file_size = len(content)
             sha256_hash = hashlib.sha256(content).hexdigest()
 
             # Check for dedup by (owner, sha256).
@@ -97,6 +167,19 @@ async def upload_library_documents(
             if existing is not None:
                 results["skipped"].append(
                     {"filename": file.filename, "id": str(existing.id), "reason": "duplicate"}
+                )
+                continue
+
+            used = await library_usage_bytes(session, user.id)
+            if used + file_size > quota_limit:
+                results["errors"].append(
+                    {
+                        "filename": file.filename,
+                        "error": (
+                            f"storage limit exceeded ({quota_label_mb} MB) — "
+                            f"need {file_size} bytes, {max(0, quota_limit - used)} remaining"
+                        ),
+                    }
                 )
                 continue
 
@@ -116,6 +199,7 @@ async def upload_library_documents(
                 mime_type=file.content_type,
                 sha256=sha256_hash,
                 status="pending",
+                size_bytes=file_size,
             )
             session.add(doc)
             await session.flush()
@@ -138,12 +222,15 @@ async def upload_library_documents(
 
 @router.get("/documents")
 async def list_library_documents(
+    sort: str = Query("newest", pattern="^(newest|oldest|name)$"),
+    project_id: str | None = Query(
+        None,
+        description="Filter by project UUID, or 'unlinked' for docs not linked to any project",
+    ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """List the current user's library documents (with comment counts)."""
-    from sqlalchemy import func
-
+    """List the current user's library documents (with comment counts and project links)."""
     comment_count = (
         select(
             LibraryDocumentComment.library_document_id,
@@ -152,7 +239,7 @@ async def list_library_documents(
         .group_by(LibraryDocumentComment.library_document_id)
         .subquery()
     )
-    result = await session.execute(
+    query = (
         select(LibraryDocument, comment_count.c.n)
         .join(
             comment_count,
@@ -160,8 +247,40 @@ async def list_library_documents(
             isouter=True,
         )
         .where(LibraryDocument.owner_id == user.id)
-        .order_by(LibraryDocument.created_at.desc())
     )
+
+    if project_id == "unlinked":
+        linked_subq = (
+            select(ProjectLibraryDocument.library_document_id)
+            .join(Project, Project.id == ProjectLibraryDocument.project_id)
+            .where(Project.owner_id == user.id)
+        )
+        query = query.where(LibraryDocument.id.not_in(linked_subq))
+    elif project_id:
+        try:
+            pid = uuid.UUID(project_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid project_id",
+            ) from exc
+        await get_owned_project(pid, user, session)
+        linked_for_project = select(ProjectLibraryDocument.library_document_id).where(
+            ProjectLibraryDocument.project_id == pid
+        )
+        query = query.where(LibraryDocument.id.in_(linked_for_project))
+
+    if sort == "oldest":
+        query = query.order_by(LibraryDocument.created_at.asc())
+    elif sort == "name":
+        query = query.order_by(LibraryDocument.original_filename.asc())
+    else:
+        query = query.order_by(LibraryDocument.created_at.desc())
+
+    rows = (await session.execute(query)).all()
+    doc_ids = [doc.id for doc, _ in rows]
+    links_by_doc = await _project_links_by_doc(session, user.id, doc_ids)
+
     return [
         {
             "id": str(doc.id),
@@ -172,9 +291,40 @@ async def list_library_documents(
             "error": doc.error,
             "comment_count": int(n or 0),
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "size_bytes": int(doc.size_bytes or 0),
+            "projects": links_by_doc.get(doc.id, []),
         }
-        for doc, n in result.all()
+        for doc, n in rows
     ]
+
+
+@router.post("/documents/bulk-delete")
+async def bulk_delete_library_documents(
+    body: BulkDeleteRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete multiple library documents in one request."""
+    deleted: list[str] = []
+    not_found: list[str] = []
+
+    for doc_id in body.ids:
+        doc = (
+            await session.execute(
+                select(LibraryDocument).where(
+                    LibraryDocument.id == doc_id,
+                    LibraryDocument.owner_id == user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if doc is None:
+            not_found.append(str(doc_id))
+            continue
+        await _delete_library_document_record(session, doc)
+        deleted.append(str(doc_id))
+
+    await session.commit()
+    return {"deleted": deleted, "not_found": not_found, "count": len(deleted)}
 
 
 async def _get_owned_library_doc(
@@ -293,28 +443,9 @@ async def delete_library_document(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Delete a library document and its embeddings."""
-    doc = (
-        await session.execute(
-            select(LibraryDocument).where(
-                LibraryDocument.id == doc_id,
-                LibraryDocument.owner_id == user.id,
-            )
-        )
-    ).scalar_one_or_none()
-
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
-    # Delete from storage.
-    try:
-        await asyncio.to_thread(storage.delete, doc.storage_key)
-    except Exception as exc:
-        log.warning("storage delete failed for %s: %s", doc.storage_key, exc)
-
-    # Delete document (cascades to embeddings and project links via FK).
-    await session.delete(doc)
+    doc = await _get_owned_library_doc(doc_id, user, session)
+    await _delete_library_document_record(session, doc)
     await session.commit()
-
     return {"deleted": str(doc_id)}
 
 

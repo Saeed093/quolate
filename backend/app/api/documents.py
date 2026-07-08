@@ -13,12 +13,12 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import get_owned_document, get_owned_project
 from app.auth.deps import get_current_user
-from app.db.models import Document, ExtractedField, User
+from app.db.models import Document, DocumentEmbedding, ExtractedField, Quote, User
 from app.db.session import get_session
 from app.ingestion.rasterize import pdf_page_to_png
 from app.jobs import queue
@@ -46,6 +46,22 @@ def _infer_kind(filename: str, mime: str | None, given: str | None) -> str:
     if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
         return "screenshot"
     return "quote"
+
+
+async def _reset_document_for_reparse(session: AsyncSession, document: Document) -> None:
+    """Clear prior extraction rows so a re-parse starts clean."""
+    doc_id = document.id
+    await session.execute(delete(ExtractedField).where(ExtractedField.document_id == doc_id))
+    await session.execute(delete(Quote).where(Quote.document_id == doc_id))
+    await session.execute(
+        delete(DocumentEmbedding).where(DocumentEmbedding.document_id == doc_id)
+    )
+    document.status = "pending"
+    document.error = None
+    document.page_count = None
+    document.ocr_used = False
+    document.stage_log = {}
+    document.supplier_id = None
 
 
 @router.post(
@@ -77,6 +93,11 @@ async def upload_documents(
         )
         dup = existing.scalar_one_or_none()
         if dup is not None:
+            if dup.status == "failed":
+                await _reset_document_for_reparse(session, dup)
+                await queue.enqueue(
+                    session, "parse_document", {"document_id": str(dup.id)}
+                )
             created.append(dup)
             continue
 
@@ -148,6 +169,48 @@ async def review_document(
         fields=[ExtractedFieldOut.model_validate(f) for f in fields],
         page_urls=page_urls,
     )
+
+
+@router.post("/documents/{document_id}/mark-reviewed", response_model=DocumentOut)
+async def mark_reviewed(
+    document_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Document:
+    """Promote a needs_review (or failed) document to parsed once the user is satisfied.
+
+    Idempotent: calling it on an already-parsed document returns 200 without error.
+    """
+    document = await get_owned_document(document_id, user, session)
+    if document.status in ("parsed",):
+        # Already done — idempotent success.
+        return document
+    if document.status in ("pending", "processing"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Document is currently being processed (status: {document.status})",
+        )
+    document.status = "parsed"
+    document.error = None
+    await session.commit()
+    await session.refresh(document)
+    return document
+
+
+@router.post("/documents/{document_id}/reparse", response_model=DocumentOut)
+async def reparse_document(
+    document_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Document:
+    document = await get_owned_document(document_id, user, session)
+    if document.status in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="Document is already being processed")
+    await _reset_document_for_reparse(session, document)
+    await queue.enqueue(session, "parse_document", {"document_id": str(document.id)})
+    await session.commit()
+    await session.refresh(document)
+    return document
 
 
 @router.get("/documents/{document_id}/pages/{page_no}.png")

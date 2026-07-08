@@ -24,6 +24,13 @@ export function BomTab({ projectId }: { projectId: string }) {
     queryKey: ["suppliers", projectId],
     queryFn: () => api.listSuppliers(projectId),
   });
+  const documents = useQuery({
+    queryKey: ["documents", projectId],
+    queryFn: () => api.listDocuments(projectId),
+  });
+  const autoBomFromQuotes = (documents.data ?? []).some(
+    (d) => (d.auto_bom_created ?? 0) > 0,
+  );
 
   const invalidateBom = () => {
     qc.invalidateQueries({ queryKey: ["bom", projectId] });
@@ -70,6 +77,12 @@ export function BomTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      {autoBomFromQuotes && (bom.data?.length ?? 0) > 0 && (
+        <div className="lg:col-span-2 rounded-xl border border-teal/30 bg-teal/5 px-4 py-3 text-sm text-muted-foreground">
+          BOM lines were auto-generated from uploaded quotations. Review names,
+          specs, and quantities below — edit anything that looks wrong.
+        </div>
+      )}
       <div className="space-y-4">
         <Card>
           <CardHeader className="pb-3">

@@ -4,6 +4,14 @@
 
 :root {
   color-scheme: light;
+  --ink: #14213d;
+  --ink-deep: #0e1830;
+  --paper: #f2f4f0;
+  --teal: #12a594;
+  --amber: #e1a83d;
+  --slate: #56606e;
+  --slate-soft: #8991a0;
+  --border-brand: #e3e2da;
 }
 
 body {
@@ -16,7 +24,7 @@ body {
 /* Slim, unobtrusive scrollbars everywhere */
 * {
   scrollbar-width: thin;
-  scrollbar-color: hsl(220 13% 82%) transparent;
+  scrollbar-color: #c5c9c2 transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
@@ -26,14 +34,27 @@ body {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: hsl(220 13% 84%);
+  background: #c5c9c2;
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: hsl(220 13% 72%);
+  background: #8991a0;
 }
 
 @layer utilities {
+  .font-display {
+    font-family: var(--font-space-grotesk), "Space Grotesk", system-ui, sans-serif;
+  }
+
+  .font-data {
+    font-family: var(--font-ibm-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  .label-section {
+    @apply font-mono text-xs uppercase tracking-wider text-teal;
+    letter-spacing: 0.08em;
+  }
+
   .glass {
     @apply bg-white/80 backdrop-blur-xl;
   }
@@ -43,29 +64,28 @@ body {
   }
 
   .gradient-primary {
-    background: linear-gradient(135deg, hsl(234 89% 64%), hsl(250 80% 58%));
+    background: var(--ink-deep);
   }
 
   .gradient-surface {
-    background: linear-gradient(135deg, hsl(220 30% 98%), hsl(240 20% 96%));
+    background: linear-gradient(135deg, #f2f4f0, #e8eae6);
   }
 
   .gradient-auth {
-    background: linear-gradient(135deg, hsl(234 50% 96%) 0%, hsl(220 30% 98%) 50%, hsl(250 40% 96%) 100%);
+    background: linear-gradient(135deg, #f2f4f0 0%, #eceee9 50%, #f2f4f0 100%);
   }
 
-  /* Ambient app background: faint indigo/violet glows over a near-white base */
+  /* Quiet paper background with a faint ink wash */
   .app-bg {
-    background-color: hsl(220 25% 98%);
+    background-color: var(--paper);
     background-image:
-      radial-gradient(48rem 24rem at 85% -8%, hsl(250 80% 58% / 0.07), transparent 60%),
-      radial-gradient(40rem 22rem at -10% 0%, hsl(234 89% 64% / 0.08), transparent 55%);
+      radial-gradient(48rem 24rem at 85% -8%, rgba(20, 33, 61, 0.04), transparent 60%),
+      radial-gradient(40rem 22rem at -10% 0%, rgba(18, 165, 148, 0.03), transparent 55%);
     background-attachment: fixed;
   }
 
-  /* Faint dotted grid, used behind auth pages */
   .dot-grid {
-    background-image: radial-gradient(hsl(234 30% 60% / 0.16) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(20, 33, 61, 0.08) 1px, transparent 1px);
     background-size: 22px 22px;
   }
 
@@ -75,8 +95,8 @@ body {
 
   /* Shared style for native <select> elements */
   .select-base {
-    @apply h-10 w-full appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm outline-none transition-shadow focus:border-primary/30 focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed disabled:opacity-50;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    @apply h-10 w-full appearance-none rounded-lg border border-input bg-background px-3 pr-8 text-sm outline-none transition-shadow focus:border-teal/30 focus:ring-2 focus:ring-teal/15 disabled:cursor-not-allowed disabled:opacity-50;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2356606E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.6rem center;
   }
@@ -107,6 +127,6 @@ body {
 
   /* Lift-on-hover treatment for interactive cards */
   .card-interactive {
-    @apply transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-lift;
+    @apply transition-all duration-200 hover:-translate-y-0.5 hover:border-ink/20 hover:shadow-lift;
   }
 }

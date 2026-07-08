@@ -266,6 +266,7 @@ async def run_chat_stream(
             except TypeError as exc:
                 result = {"error": f"bad arguments: {exc}"}
             except Exception as exc:  # tools fail soft
+                log.warning("tool %s failed", step.action, exc_info=True)
                 result = {"error": repr(exc)}
 
         blob = json.dumps(result, default=str)

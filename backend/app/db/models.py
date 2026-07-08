@@ -355,6 +355,7 @@ class LibraryDocument(UUIDPKMixin, TimestampMixin, Base):
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     stage_log: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
 
 
 class LibraryDocumentEmbedding(UUIDPKMixin, TimestampMixin, Base):
@@ -578,3 +579,25 @@ class ProjectLibraryDocument(TimestampMixin, Base):
         ForeignKey("library_documents.id", ondelete="CASCADE"),
         nullable=False,
     )
+
+
+class AuditEvent(UUIDPKMixin, TimestampMixin, Base):
+    """Compliance audit trail: one row per recorded user action.
+
+    Populated by the audit middleware (app.audit) for mutating requests and
+    duty calculations. Read by the admin console.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_user_created", "user_id", "created_at"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String, nullable=False)  # human label
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)

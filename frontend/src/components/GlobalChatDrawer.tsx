@@ -6,6 +6,7 @@ import { MessageSquare, PanelRightClose, Sparkles } from "lucide-react";
 import { useChat } from "@/contexts/ChatContext";
 import { ChatPanel } from "@/components/workbench/ChatPanel";
 import { GlobalChatPanel } from "@/components/GlobalChatPanel";
+import { GpuGate } from "@/components/GpuGate";
 import { LlmStatusBadge } from "@/components/LlmStatusBadge";
 import { api, getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,7 @@ export function GlobalChatDrawer() {
         onClick={() => toggle(true)}
         aria-label="Open assistant"
         className={cn(
-          "fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full gradient-primary px-4 py-3 text-sm font-medium text-white shadow-lift transition-all hover:shadow-glow",
+          "fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-ink-deep px-4 py-3 text-sm font-medium text-paper shadow-lift transition-all hover:bg-ink",
           busy && "animate-pulse",
         )}
       >
@@ -72,7 +73,7 @@ export function GlobalChatDrawer() {
         <div className="flex shrink-0 flex-col gap-2 border-b border-border/60 px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-primary text-white">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-ink-deep text-paper">
                 <MessageSquare className="h-4 w-4" />
               </div>
               <div>
@@ -113,16 +114,18 @@ export function GlobalChatDrawer() {
         </div>
 
         <div className="min-h-0 flex-1">
-          {projectId ? (
-            <ChatPanel
-              key={projectId}
-              projectId={projectId}
-              params={params}
-              onMatrixChanged={onMatrixChanged ?? (() => {})}
-            />
-          ) : (
-            <GlobalChatPanel key="global" />
-          )}
+          <GpuGate>
+            {projectId ? (
+              <ChatPanel
+                key={projectId}
+                projectId={projectId}
+                params={params}
+                onMatrixChanged={onMatrixChanged ?? (() => {})}
+              />
+            ) : (
+              <GlobalChatPanel key="global" />
+            )}
+          </GpuGate>
         </div>
       </aside>
     </>

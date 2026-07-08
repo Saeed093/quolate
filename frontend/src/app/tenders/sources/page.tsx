@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Trash2, Loader2 } from "lucide-react";
 import { api, getToken, type TenderSource } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -101,11 +101,10 @@ export default function SourcesPage() {
   }, [sources.data, bgPulling.size, qc]);
 
   return (
-    <div className="min-h-screen">
-      <AppNav />
+    <AppShell>
       <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6">
         <div className="mb-5">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="font-display text-2xl font-semibold tracking-tight">
             Tender sources
           </h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
@@ -228,6 +227,6 @@ export default function SourcesPage() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }

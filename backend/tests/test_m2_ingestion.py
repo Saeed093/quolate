@@ -202,6 +202,123 @@ def test_duplicate_upload_dedups_by_sha256(auth_client):
     assert len(docs) == 1
 
 
+def test_auto_bom_from_quote_when_project_has_no_bom(auth_client):
+    from app.llm.mock import queue_responses
+
+    pid = auth_client.post("/projects", json={"name": "Auto BOM"}).json()["id"]
+    queue_responses(
+        json.dumps(
+            {
+                "supplier_name": "ACME",
+                "currency": "USD",
+                "line_items": [
+                    {
+                        "line_no": 1,
+                        "part_name": "Thermal Camera",
+                        "quantity": 100,
+                        "unit_price": 1150,
+                    },
+                    {
+                        "line_no": 2,
+                        "part_name": "Tripod",
+                        "quantity": 50,
+                        "unit_price": 40,
+                    },
+                ],
+                "fields": [
+                    {
+                        "bom_line_no": 1,
+                        "field_type": "unit_price",
+                        "value_num": 1150,
+                        "confidence": 0.95,
+                        "source_snippet": "Thermal Camera 1150",
+                    },
+                    {
+                        "bom_line_no": 2,
+                        "field_type": "unit_price",
+                        "value_num": 40,
+                        "confidence": 0.95,
+                        "source_snippet": "Tripod 40",
+                    },
+                ],
+            }
+        )
+    )
+    up = auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[
+            (
+                "files",
+                ("quote.txt", b"ACME Thermal Camera 1150 Tripod 40", "text/plain"),
+            )
+        ],
+    )
+    assert up.status_code == 201
+    assert _drain() == 1
+
+    bom = auth_client.get(f"/projects/{pid}/bom").json()
+    assert len(bom) == 2
+    names = {row["part_name"] for row in bom}
+    assert names == {"Thermal Camera", "Tripod"}
+
+    docs = auth_client.get(f"/projects/{pid}/documents").json()
+    assert docs[0]["auto_bom_created"] == 2
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    assert matrix["summary"]["lines_total"] == 2
+    assert matrix["summary"]["suppliers_total"] == 1
+
+
+def test_reparse_failed_document(auth_client, monkeypatch):
+    from app.ingestion import llm_extract
+    from app.llm.mock import queue_responses
+
+    pid = auth_client.post("/projects", json={"name": "Reparse"}).json()["id"]
+    attempts = {"n": 0}
+
+    def flaky_extract(bom_lines, full_text):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("LLM offline")
+        return llm_extract.extract_fields(bom_lines, full_text)
+
+    monkeypatch.setattr("app.ingestion.pipeline.extract_fields", flaky_extract)
+    auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("bad.txt", b"quote body", "text/plain"))],
+    )
+    assert _drain() == 1
+    doc_id = auth_client.get(f"/projects/{pid}/documents").json()[0]["id"]
+    assert auth_client.get(f"/projects/{pid}/documents").json()[0]["status"] == "failed"
+
+    queue_responses(
+        json.dumps(
+            {
+                "supplier_name": "ACME",
+                "currency": "USD",
+                "line_items": [{"line_no": 1, "part_name": "Widget A", "unit_price": 9.5}],
+                "fields": [
+                    {
+                        "bom_line_no": 1,
+                        "field_type": "unit_price",
+                        "value_num": 9.5,
+                        "confidence": 0.95,
+                        "source_snippet": "Widget A 9.5",
+                    }
+                ],
+            }
+        )
+    )
+    resp = auth_client.post(f"/documents/{doc_id}/reparse")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending"
+    assert _drain() == 1
+
+    docs = auth_client.get(f"/projects/{pid}/documents").json()
+    assert docs[0]["status"] in ("parsed", "needs_review")
+    assert len(auth_client.get(f"/projects/{pid}/bom").json()) == 1
+
+
 def test_quote_revision_supersedes_previous(auth_client):
     from app.llm.mock import queue_responses
 

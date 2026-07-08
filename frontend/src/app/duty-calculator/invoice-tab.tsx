@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as XLSX from "xlsx";
 import {
   Calculator,
   ChevronDown,
   ChevronRight,
   ClipboardType,
+  Download,
   FileSearch,
   Library,
   Loader2,
@@ -188,7 +190,12 @@ export function InvoiceTab() {
       updateItem(row.key, { classifying: true });
       try {
         const res = await api.classifyHsCode({ text: row.description });
-        if (classifyGen.current !== gen) return;
+        if (classifyGen.current !== gen) {
+          // Items were replaced by a new parse mid-flight. Stop the spinner
+          // (no-op if the row is gone) but discard the stale result.
+          updateItem(row.key, { classifying: false });
+          return;
+        }
         const top = res.candidates[0];
         updateItem(row.key, {
           candidates: res.candidates,
@@ -197,7 +204,8 @@ export function InvoiceTab() {
         });
         if (top) await prefillRates(row.key, top.hs_code, gen);
       } catch {
-        if (classifyGen.current !== gen) return;
+        // Always clear the spinner — a stale generation must never leave a
+        // row stuck in "classifying" forever.
         updateItem(row.key, { classifying: false, candidates: [] });
       }
     },
@@ -207,7 +215,18 @@ export function InvoiceTab() {
   const autoClassify = useCallback(
     async (rows: ItemRow[]) => {
       const gen = ++classifyGen.current;
-      for (const row of rows.slice(0, AUTO_CLASSIFY_LIMIT)) {
+      const queue = rows
+        .slice(0, AUTO_CLASSIFY_LIMIT)
+        .filter((r) => r.description.trim());
+      // Show spinners on every queued row up front so it's visible that
+      // suggestion has auto-started for all of them, not just the first.
+      const queuedKeys = new Set(queue.map((r) => r.key));
+      setItems((prev) =>
+        prev.map((it) =>
+          queuedKeys.has(it.key) ? { ...it, classifying: true } : it,
+        ),
+      );
+      for (const row of queue) {
         if (classifyGen.current !== gen) return;
         await classifyRow(row, gen);
       }
@@ -222,7 +241,7 @@ export function InvoiceTab() {
 
   const libraryDocs = useQuery({
     queryKey: ["library-documents"],
-    queryFn: api.listLibraryDocuments,
+    queryFn: () => api.listLibraryDocuments(),
   });
 
   function seedFromParse(data: InvoiceParseResult) {
@@ -369,7 +388,7 @@ export function InvoiceTab() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Sparkles className="h-4 w-4 text-primary" />
+            <Sparkles className="h-4 w-4 text-teal" />
             Read an invoice or quotation
           </CardTitle>
           <p className="text-xs text-muted-foreground">
@@ -399,13 +418,13 @@ export function InvoiceTab() {
                 {...getRootProps()}
                 className={cn(
                   "flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-border/70 px-4 py-8 text-center transition-colors",
-                  isDragActive && "border-primary bg-primary/5",
+                  isDragActive && "border-teal bg-teal/5",
                   uploadAndParse.isPending && "pointer-events-none opacity-60",
                 )}
               >
                 <input {...getInputProps()} />
                 {uploadAndParse.isPending ? (
-                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                  <Loader2 className="h-6 w-6 animate-spin text-teal" />
                 ) : (
                   <UploadCloud className="h-6 w-6 text-muted-foreground" />
                 )}
@@ -554,9 +573,12 @@ export function InvoiceTab() {
                         void prefillRates(it.key, c.hs_code);
                       }}
                       onHsBlur={() => void prefillRates(it.key, it.hsCode)}
-                      onSuggest={() =>
-                        void classifyRow(it, ++classifyGen.current)
-                      }
+                      onSuggest={() => {
+                        // Don't bump the generation: a manual suggest must
+                        // not cancel the auto-classify run for other rows.
+                        if (!it.classifying)
+                          void classifyRow(it, classifyGen.current);
+                      }}
                       onRemove={() =>
                         setItems((prev) => prev.filter((r) => r.key !== it.key))
                       }
@@ -826,7 +848,18 @@ function ItemRows({
             inputMode="decimal"
             min={0}
             value={item.quantity}
-            onChange={(e) => onChange({ quantity: e.target.value })}
+            onChange={(e) => {
+              const qty = e.target.value;
+              const autoTotal =
+                qty !== "" && item.unitPrice !== ""
+                  ? String(
+                      Number(
+                        (Number(qty) * Number(item.unitPrice)).toFixed(4),
+                      ),
+                    )
+                  : "";
+              onChange({ quantity: qty, lineTotal: autoTotal });
+            }}
           />
         </TableCell>
         <TableCell className="align-top">
@@ -836,7 +869,18 @@ function ItemRows({
             min={0}
             step="0.01"
             value={item.unitPrice}
-            onChange={(e) => onChange({ unitPrice: e.target.value })}
+            onChange={(e) => {
+              const price = e.target.value;
+              const autoTotal =
+                item.quantity !== "" && price !== ""
+                  ? String(
+                      Number(
+                        (Number(item.quantity) * Number(price)).toFixed(4),
+                      ),
+                    )
+                  : "";
+              onChange({ unitPrice: price, lineTotal: autoTotal });
+            }}
           />
         </TableCell>
         <TableCell className="align-top">
@@ -854,14 +898,14 @@ function ItemRows({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
               <Input
-                className="font-mono"
+                className="font-data"
                 placeholder="e.g. 8517.12.00"
                 value={item.hsCode}
                 onChange={(e) => onChange({ hsCode: e.target.value })}
                 onBlur={onHsBlur}
               />
               {item.classifying ? (
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" />
               ) : (
                 <Button
                   type="button"
@@ -950,10 +994,160 @@ function ItemRows({
   );
 }
 
+function exportToExcel(result: InvoiceCalcResult) {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Invoice Summary
+  const summaryRows: (string | number)[][] = [
+    ["Invoice Summary"],
+    [],
+    [
+      "Currency",
+      result.currency,
+      "FX Rate (PKR)",
+      Number(result.fx_rate),
+      result.fx_rate_date ? `Rate of ${result.fx_rate_date}` : "",
+    ],
+    [],
+    ["Goods value C&F (PKR)", Number(result.totals.cf_value_pkr)],
+    [
+      "Import value (incl. insurance + landing)",
+      Number(result.totals.import_value_pkr),
+    ],
+    [
+      "Duties & taxes (Collector of Customs)",
+      Number(result.totals.customs_total_pkr),
+    ],
+    ["Excise & Taxation AFU", Number(result.totals.afu_pkr)],
+    ["Stamps", Number(result.totals.stamp_fee_pkr)],
+    ["PSW GD fee", Number(result.totals.psw_fee_pkr)],
+    [],
+    ["Total taxes, duties & fees", Number(result.totals.total_payable_pkr)],
+    ["Total landed cleared price (PKR)", Number(result.totals.landed_cleared_price_pkr)],
+    [],
+    ["Disclaimer", result.disclaimer],
+  ];
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary["!cols"] = [{ wch: 42 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 30 }];
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Invoice Summary");
+
+  // Sheet 2: Per-item costs overview
+  const itemCostRows: (string | number)[][] = [
+    ["#", "Description", "HS Code", `Line Total (${result.currency})`, "Import Value (PKR)", "Duties & Taxes (PKR)", "Total Cost (PKR)"],
+  ];
+  for (const [i, item] of result.items.entries()) {
+    const totalCost = Number(item.import_value_pkr) + Number(item.item_duty_total_pkr);
+    itemCostRows.push([
+      i + 1,
+      item.description,
+      item.hs_code,
+      Number(item.line_total),
+      Number(item.import_value_pkr),
+      Number(item.item_duty_total_pkr),
+      totalCost,
+    ]);
+  }
+  const wsItems = XLSX.utils.aoa_to_sheet(itemCostRows);
+  wsItems["!cols"] = [{ wch: 4 }, { wch: 40 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 22 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsItems, "Item Costs");
+
+  // Sheet 3: Per-item levy breakdown
+  const levyRows: (string | number)[][] = [
+    ["#", "Description", "HS Code", "Levy", "Rate", "Basis (PKR)", "Amount (PKR)"],
+  ];
+  for (const [i, item] of result.items.entries()) {
+    for (const levy of item.levies) {
+      levyRows.push([
+        i + 1,
+        item.description,
+        item.hs_code,
+        levy.label,
+        levy.levy_type === "FED" ? "manual" : `${(Number(levy.rate) * 100).toFixed(2)}%`,
+        levy.levy_type === "FED" ? "" : Number(levy.basis_pkr),
+        Number(levy.amount_pkr),
+      ]);
+    }
+    levyRows.push([i + 1, item.description, item.hs_code, "TOTAL duties & taxes", "", "", Number(item.item_duty_total_pkr)]);
+    levyRows.push([]);
+  }
+  const wsLevy = XLSX.utils.aoa_to_sheet(levyRows);
+  wsLevy["!cols"] = [{ wch: 4 }, { wch: 40 }, { wch: 14 }, { wch: 28 }, { wch: 10 }, { wch: 22 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, wsLevy, "Levy Breakdown");
+
+  XLSX.writeFile(wb, "duty-calculation.xlsx");
+}
+
 function InvoiceResults({ result }: { result: InvoiceCalcResult }) {
   const t = result.totals;
   return (
     <div className="flex animate-fade-in-up flex-col gap-4">
+      {/* Per-item PKR cost overview — shown above the invoice summary */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle className="text-base">Item costs (PKR)</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Import value + duties &amp; taxes per line item
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => exportToExcel(result)}
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export Excel
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-6">#</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead className="text-right">
+                  Line total ({result.currency})
+                </TableHead>
+                <TableHead className="text-right">Import value (PKR)</TableHead>
+                <TableHead className="text-right">Duties &amp; taxes (PKR)</TableHead>
+                <TableHead className="text-right font-semibold">Total cost (PKR)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {result.items.map((item, i) => {
+                const totalCost =
+                  Number(item.import_value_pkr) + Number(item.item_duty_total_pkr);
+                return (
+                  <TableRow key={i}>
+                    <TableCell className="text-muted-foreground">{i + 1}</TableCell>
+                    <TableCell>
+                      <span className="font-medium">{item.description || `Item ${i + 1}`}</span>
+                      <span className="ml-2 font-data text-xs text-muted-foreground">{item.hs_code}</span>
+                    </TableCell>
+                    <TableCell className="text-right font-data tabular-nums">
+                      {Number(item.line_total).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right font-data tabular-nums">
+                      {formatPkr(item.import_value_pkr)}
+                    </TableCell>
+                    <TableCell className="text-right font-data tabular-nums">
+                      {formatPkr(item.item_duty_total_pkr)}
+                    </TableCell>
+                    <TableCell className="text-right font-data font-semibold tabular-nums text-teal">
+                      {formatPkr(String(totalCost))}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Invoice summary */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Invoice summary</CardTitle>
@@ -993,7 +1187,7 @@ function InvoiceResults({ result }: { result: InvoiceCalcResult }) {
               <p className="text-xs text-muted-foreground">
                 Total landed cleared price
               </p>
-              <p className="text-xl font-bold text-primary">
+              <p className="font-data text-xl font-bold text-teal">
                 {formatPkr(t.landed_cleared_price_pkr)}
               </p>
             </div>
@@ -1020,7 +1214,7 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4">
       <span className="text-muted-foreground">{label}</span>
-      <span className="tabular-nums">{formatPkr(value)}</span>
+      <span className="font-data tabular-nums">{formatPkr(value)}</span>
     </div>
   );
 }
@@ -1039,7 +1233,7 @@ function ItemResultCard({
       <CardHeader>
         <CardTitle className="text-sm">
           {index + 1}. {item.description || "Item"}{" "}
-          <span className="ml-1 font-mono text-xs font-normal text-muted-foreground">
+          <span className="ml-1 font-data text-xs font-normal text-muted-foreground">
             {item.hs_code}
           </span>
         </CardTitle>
@@ -1071,10 +1265,10 @@ function ItemResultCard({
                     ? "manual"
                     : `${(Number(line.rate) * 100).toFixed(2)}%`}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="text-right font-data tabular-nums">
                   {line.levy_type === "FED" ? "—" : formatPkr(line.basis_pkr)}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="text-right font-data tabular-nums">
                   {formatPkr(line.amount_pkr)}
                 </TableCell>
               </TableRow>
@@ -1084,7 +1278,7 @@ function ItemResultCard({
         <div className="mt-3 flex flex-wrap items-center justify-end gap-6 border-t border-border/60 pt-3 text-sm">
           <div className="text-right">
             <p className="text-xs text-muted-foreground">Duties &amp; taxes (item)</p>
-            <p className="font-semibold">{formatPkr(item.item_duty_total_pkr)}</p>
+            <p className="font-data font-semibold">{formatPkr(item.item_duty_total_pkr)}</p>
           </div>
         </div>
       </CardContent>

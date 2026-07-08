@@ -104,7 +104,16 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from app.errorlog import register_error_handlers, setup_error_file_logging
+
+    setup_error_file_logging()
     app = FastAPI(title="Quolate API", version="0.1.0", lifespan=lifespan)
+    register_error_handlers(app)
+
+    # Compliance audit trail: records each user action into audit_events.
+    from app.audit import audit_middleware
+
+    app.middleware("http")(audit_middleware)
 
     app.add_middleware(
         CORSMiddleware,
@@ -120,41 +129,9 @@ def create_app() -> FastAPI:
 
     @app.get("/status/llm")
     async def llm_status() -> dict:
-        import httpx
+        from app.llm.gpu import gpu_chat_status
 
-        ollama_base = settings.llm_base_url.replace("/v1", "")
-        result: dict = {
-            "online": False,
-            "model": settings.llm_model,
-            "gpu": False,
-            "gpu_name": None,
-            "vram_used": None,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                tags_resp = await client.get(f"{ollama_base}/api/tags")
-                if tags_resp.status_code != 200:
-                    return result
-                result["online"] = True
-
-                ps_resp = await client.get(f"{ollama_base}/api/ps")
-                if ps_resp.status_code == 200:
-                    ps_data = ps_resp.json()
-                    models = ps_data.get("models", [])
-                    for m in models:
-                        size_vram = m.get("size_vram", 0)
-                        size = m.get("size", 1)
-                        if size_vram > 0:
-                            result["gpu"] = True
-                            vram_gb = size_vram / (1024**3)
-                            result["vram_used"] = f"{vram_gb:.1f} GB"
-                        details = m.get("details", {})
-                        gpu_name = details.get("gpu_name")
-                        if gpu_name:
-                            result["gpu_name"] = gpu_name
-        except (httpx.ConnectError, httpx.TimeoutException, Exception):
-            pass
-        return result
+        return await gpu_chat_status()
 
     from app.api import register_routers
 

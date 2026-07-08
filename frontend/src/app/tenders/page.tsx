@@ -11,7 +11,7 @@ import {
   type TenderFilter,
   type TenderSource,
 } from "@/lib/api";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppNav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -128,12 +128,11 @@ export default function TendersPage() {
   }
 
   return (
-    <div className="min-h-screen">
-      <AppNav />
+    <AppShell>
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Tenders</h1>
+            <h1 className="font-display text-2xl font-semibold tracking-tight">Tenders</h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
               Public procurement notices from your sources
             </p>
@@ -191,7 +190,7 @@ export default function TendersPage() {
                 }}
                 onDoubleClick={() => deleteFilter.mutate(f.id)}
                 title="Click to apply · double-click to delete"
-                className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-accent/60 px-3 py-1 text-xs font-medium text-accent-foreground transition-all hover:bg-accent hover:shadow-soft"
+                className="inline-flex items-center gap-1.5 rounded-full border border-teal/20 bg-teal/5 px-3 py-1 text-xs font-medium text-ink transition-all hover:bg-teal/10 hover:shadow-soft"
               >
                 <Bookmark className="h-3 w-3" /> {f.name}
               </button>
@@ -352,6 +351,6 @@ export default function TendersPage() {
       </main>
 
       <TenderDetailDrawer tender={selected} onClose={() => setSelected(null)} />
-    </div>
+    </AppShell>
   );
 }

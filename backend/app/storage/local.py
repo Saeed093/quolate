@@ -42,3 +42,14 @@ class LocalDiskStorage(StorageService):
         path = self._path(key)
         if path.exists():
             path.unlink()
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Remove a key prefix tree from disk (e.g. projects/{id}/)."""
+        import shutil
+
+        safe = prefix.replace("\\", "/").strip("/")
+        if not safe:
+            return
+        root = self._path(safe)
+        if root.exists():
+            shutil.rmtree(root)

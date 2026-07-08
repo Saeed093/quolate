@@ -65,8 +65,10 @@ async def parse_document(session: AsyncSession, payload: dict) -> None:
                 extract_fields, bom_lines, content.full_text
             )
         except SchemaEnforceError as exc:
-            document.status = "needs_review"
-            document.error = f"extraction schema failed: {exc}"
+            # The LLM failed to produce valid JSON twice. Mark as failed so the
+            # user sees a retry button — there are no fields to review.
+            document.status = "failed"
+            document.error = f"LLM extraction failed (schema): {exc}"
             _log(document, "extract_llm", "schema_failed")
             await session.commit()
             return
@@ -74,10 +76,14 @@ async def parse_document(session: AsyncSession, payload: dict) -> None:
         _log(document, "extract_llm", {"fields": len(extraction.get("fields", []))})
 
         # Stage 4-5: persist fields + quotes + embedding.
-        needs_review = await persist_extraction(
+        needs_review, bom_created = await persist_extraction(
             session, document, extraction, content.pages
         )
-        _log(document, "persist", {"needs_review_fields": needs_review})
+        _log(
+            document,
+            "persist",
+            {"needs_review_fields": needs_review, "auto_bom_created": bom_created},
+        )
 
         document.status = "needs_review" if needs_review > 0 else "parsed"
         document.error = None

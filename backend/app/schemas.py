@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class ORMModel(BaseModel):
@@ -132,6 +132,17 @@ class DocumentOut(ORMModel):
     ocr_used: bool
     error: str | None
     created_at: datetime
+    auto_bom_created: int = 0
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _inject_auto_bom(cls, value, handler):
+        out = handler(value)
+        if hasattr(value, "stage_log"):
+            persist = (value.stage_log or {}).get("persist") or {}
+            if isinstance(persist, dict):
+                out.auto_bom_created = int(persist.get("auto_bom_created") or 0)
+        return out
 
 
 class ExtractedFieldOut(ORMModel):

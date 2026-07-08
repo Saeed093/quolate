@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RotateCcw } from "lucide-react";
 import { api, type ExtractedField } from "@/lib/api";
 import {
   Dialog,
@@ -12,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "@/components/ui/use-toast";
 import { useAuthedImage } from "@/lib/useAuthedImage";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +54,19 @@ export function ReviewSplitView({
     : null;
   const { src, loading } = useAuthedImage(pageUrl);
 
+  const doc = review.data?.document;
+  const hasError = !!doc?.error;
+  const docStatus = doc?.status ?? "";
+  // Show "Mark as done" only when the document is in a reviewable state and
+  // either all fields are confirmed/edited/rejected, or there are no fields.
+  const pendingReview = docStatus === "needs_review" || docStatus === "failed";
+  const allFieldsDone =
+    fields.length === 0 ||
+    fields.every(
+      (f) => f.status === "confirmed" || f.status === "edited" || f.status === "rejected",
+    );
+  const showMarkDone = pendingReview && allFieldsDone;
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["review", documentId] });
     qc.invalidateQueries({ queryKey: ["documents", projectId] });
@@ -62,6 +77,26 @@ export function ReviewSplitView({
     mutationFn: (patch: Partial<ExtractedField>) =>
       api.updateField(selected!.id, patch),
     onSuccess: invalidate,
+  });
+
+  const markDone = useMutation({
+    mutationFn: () => api.markReviewed(documentId),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Document marked as reviewed" });
+      onClose();
+    },
+    onError: () => toast({ title: "Could not mark as reviewed", variant: "destructive" }),
+  });
+
+  const reparse = useMutation({
+    mutationFn: () => api.reparseDocument(documentId),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Re-parsing document…" });
+      onClose();
+    },
+    onError: () => toast({ title: "Could not re-parse", variant: "destructive" }),
   });
 
   function confirmField() {
@@ -123,9 +158,37 @@ export function ReviewSplitView({
         onKeyDown={onKeyDown}
       >
         <DialogHeader>
-          <DialogTitle>
-            {review.data?.document.original_filename ?? "Review"}
-          </DialogTitle>
+          <div className="flex items-center justify-between gap-3">
+            <DialogTitle className="truncate">
+              {doc?.original_filename ?? "Review"}
+            </DialogTitle>
+            <div className="flex shrink-0 items-center gap-2">
+              {hasError && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  disabled={reparse.isPending}
+                  onClick={() => reparse.mutate()}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Retry parsing
+                </Button>
+              )}
+              {showMarkDone && (
+                <Button
+                  size="sm"
+                  disabled={markDone.isPending}
+                  onClick={() => markDone.mutate()}
+                >
+                  Mark as done
+                </Button>
+              )}
+            </div>
+          </div>
+          {hasError && (
+            <p className="mt-1 text-xs text-destructive">{doc!.error}</p>
+          )}
         </DialogHeader>
         <div className="grid min-h-0 grid-rows-[minmax(0,2fr)_minmax(0,3fr)] gap-4 md:grid-cols-2 md:grid-rows-1">
           <div className="relative overflow-auto rounded-xl border border-border/60 bg-muted/30">
@@ -154,8 +217,8 @@ export function ReviewSplitView({
                   className={cn(
                     "cursor-pointer rounded-xl border bg-card p-3 transition-all",
                     f.id === selectedId
-                      ? "border-primary shadow-card ring-2 ring-ring/20"
-                      : "border-border/60 hover:border-primary/30",
+                      ? "border-teal shadow-card ring-2 ring-teal/20"
+                      : "border-border/60 hover:border-teal/30",
                   )}
                 >
                   <div className="flex items-center justify-between">
@@ -197,9 +260,17 @@ export function ReviewSplitView({
                 </div>
               ))}
               {navList.length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  No extracted fields.
-                </p>
+                <div className="space-y-3 py-4 text-sm text-muted-foreground">
+                  <p>No extracted fields.</p>
+                  {hasError ? (
+                    <p>
+                      The LLM could not parse this document. Use{" "}
+                      <strong>Retry parsing</strong> above to try again.
+                    </p>
+                  ) : (
+                    <p>All fields have been reviewed.</p>
+                  )}
+                </div>
               )}
             </div>
           </div>

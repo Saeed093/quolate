@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,13 +13,22 @@ import {
   MessageSquare,
   Loader2,
   Send,
+  FolderOpen,
 } from "lucide-react";
 import { api, getToken, type LibraryDocument } from "@/lib/api";
 import { useActivity } from "@/contexts/ActivityContext";
-import { AppNav } from "@/components/AppNav";
+import { AppShell } from "@/components/AppNav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -39,20 +48,51 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "failed",
 };
 
+type SortOption = "newest" | "oldest" | "name";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function DocumentsPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const { startUpload, setUploadProgress, endUpload, uploads } = useActivity();
   const libraryUpload = uploads.find((u) => u.id === "library");
   const [commentsFor, setCommentsFor] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortOption>("newest");
+  const [projectFilter, setProjectFilter] = useState<string>("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
   }, [router]);
 
+  const quota = useQuery({
+    queryKey: ["library-quota"],
+    queryFn: api.libraryQuota,
+  });
+
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.listProjects,
+  });
+
+  const listParams = useMemo(
+    () => ({
+      sort,
+      ...(projectFilter === "all"
+        ? {}
+        : { project_id: projectFilter }),
+    }),
+    [sort, projectFilter],
+  );
+
   const docs = useQuery({
-    queryKey: ["library-documents"],
-    queryFn: api.listLibraryDocuments,
+    queryKey: ["library-documents", listParams],
+    queryFn: () => api.listLibraryDocuments(listParams),
     refetchInterval: (q) => {
       const data = q.state.data as LibraryDocument[] | undefined;
       const busy = data?.some((d) =>
@@ -61,6 +101,9 @@ export default function DocumentsPage() {
       return busy ? 2000 : false;
     },
   });
+
+  const quotaFull =
+    quota.data != null && quota.data.used_bytes >= quota.data.limit_bytes;
 
   const upload = useMutation({
     mutationFn: (files: File[]) => {
@@ -71,6 +114,7 @@ export default function DocumentsPage() {
     },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["library-documents"] });
+      qc.invalidateQueries({ queryKey: ["library-quota"] });
       qc.invalidateQueries({ queryKey: ["activity"] });
       const created = result.created.length;
       const skipped = result.skipped.length;
@@ -94,23 +138,54 @@ export default function DocumentsPage() {
     mutationFn: (id: string) => api.deleteLibraryDocument(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["library-documents"] });
+      qc.invalidateQueries({ queryKey: ["library-quota"] });
       toast({ title: "Document deleted" });
     },
     onError: () => toast({ title: "Delete failed", variant: "destructive" }),
   });
 
+  const bulkDel = useMutation({
+    mutationFn: (ids: string[]) => api.bulkDeleteLibraryDocuments(ids),
+    onSuccess: (result) => {
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["library-documents"] });
+      qc.invalidateQueries({ queryKey: ["library-quota"] });
+      toast({
+        title: `Deleted ${result.count} document(s)`,
+        description:
+          result.not_found.length > 0
+            ? `${result.not_found.length} not found`
+            : undefined,
+      });
+    },
+    onError: () =>
+      toast({ title: "Bulk delete failed", variant: "destructive" }),
+  });
+
   const onDrop = useCallback(
     (accepted: File[]) => {
-      if (accepted.length) upload.mutate(accepted);
+      if (!accepted.length) return;
+      if (quotaFull) {
+        toast({
+          title: "Storage limit reached",
+          description: "Delete documents to free space before uploading.",
+          variant: "destructive",
+        });
+        return;
+      }
+      upload.mutate(accepted);
     },
-    [upload],
+    [upload, quotaFull],
   );
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    disabled: quotaFull,
+  });
 
-  // Paste a screenshot anywhere -> upload to the library.
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
+      if (quotaFull) return;
       const files: File[] = [];
       for (const item of Array.from(e.clipboardData?.items ?? [])) {
         if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -122,7 +197,42 @@ export default function DocumentsPage() {
     }
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [upload]);
+  }, [upload, quotaFull]);
+
+  const visibleIds = docs.data?.map((d) => d.id) ?? [];
+  const allSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  const someSelected = visibleIds.some((id) => selected.has(id));
+
+  function toggleAll() {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(visibleIds));
+    }
+  }
+
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function confirmBulkDelete() {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    if (
+      !window.confirm(
+        `Delete ${ids.length} selected document(s)? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    bulkDel.mutate(ids);
+  }
 
   async function openDoc(d: LibraryDocument, inline: boolean) {
     try {
@@ -132,37 +242,135 @@ export default function DocumentsPage() {
     }
   }
 
+  const usedPct = quota.data
+    ? Math.min(100, (quota.data.used_bytes / quota.data.limit_bytes) * 100)
+    : 0;
+
   return (
-    <div className="min-h-screen">
-      <AppNav />
+    <AppShell>
       <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6">
-        <h1 className="mb-1 text-2xl font-semibold tracking-tight">Documents</h1>
-        <p className="mb-5 text-sm text-muted-foreground">
-          Your global document library. Everything uploaded here is indexed so
-          the assistant can find and correlate it with tenders and projects.
-        </p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="mb-1 font-display text-2xl font-semibold tracking-tight">
+              Documents
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Your global document library. Everything uploaded here is indexed so
+              the assistant can find and correlate it with tenders and projects.
+            </p>
+          </div>
+
+          {quota.data && (
+            <div className="shrink-0 text-right">
+              <p
+                className={cn(
+                  "text-sm font-medium tabular-nums",
+                  quotaFull && "text-gap",
+                )}
+              >
+                {(quota.data.used_bytes / (1024 * 1024)).toFixed(1)} /{" "}
+                {Math.round(quota.data.limit_bytes / (1024 * 1024))} MB
+              </p>
+              <div className="mt-1.5 ml-auto h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all duration-300",
+                    usedPct >= 95
+                      ? "bg-gap"
+                      : usedPct >= 80
+                        ? "bg-verify"
+                        : "bg-teal",
+                  )}
+                  style={{ width: `${usedPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Select
+            value={sort}
+            onValueChange={(v) => setSort(v as SortOption)}
+          >
+            <SelectTrigger className="h-9 w-[160px] text-xs">
+              <SelectValue placeholder="Sort by" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="newest">Newest first</SelectItem>
+              <SelectItem value="oldest">Oldest first</SelectItem>
+              <SelectItem value="name">Name A–Z</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select value={projectFilter} onValueChange={setProjectFilter}>
+            <SelectTrigger className="h-9 w-[180px] text-xs">
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All documents</SelectItem>
+              <SelectItem value="unlinked">Not linked to a project</SelectItem>
+              {projects.data?.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {someSelected && (
+            <Button
+              size="sm"
+              variant="destructive"
+              className="ml-auto h-9 gap-1.5 text-xs"
+              onClick={confirmBulkDelete}
+              disabled={bulkDel.isPending}
+            >
+              {bulkDel.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              Delete selected ({selected.size})
+            </Button>
+          )}
+        </div>
+
+        {visibleIds.length > 0 && (
+          <label className="mb-3 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+            <Checkbox
+              checked={allSelected}
+              onCheckedChange={toggleAll}
+              aria-label="Select all documents"
+            />
+            Select all on this page
+          </label>
+        )}
 
         <div
           {...getRootProps()}
           className={cn(
-            "mb-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-card/60 px-4 py-10 text-center transition-all hover:border-primary/40 hover:bg-accent/40",
-            isDragActive && "border-primary bg-accent/60 shadow-glow",
+            "mb-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-card/60 px-4 py-10 text-center transition-all hover:border-teal/40 hover:bg-accent/40",
+            isDragActive && "border-teal bg-teal/5 shadow-soft",
+            quotaFull && "cursor-not-allowed opacity-60 hover:border-border hover:bg-card/60",
           )}
         >
-          <input {...getInputProps()} />
+          <input {...getInputProps()} disabled={quotaFull} />
           <div className="flex h-11 w-11 items-center justify-center rounded-full bg-accent">
             <UploadCloud className="h-5 w-5 text-accent-foreground" />
           </div>
           <p className="text-sm">
-            Drop PDFs, images, Word/PowerPoint docs, Excel, or zips here, or
-            click to browse.
+            {quotaFull
+              ? "Storage full — delete documents to upload more"
+              : "Drop PDFs, images, Word/PowerPoint docs, Excel, or zips here, or click to browse."}
           </p>
-          <p className="text-xs text-muted-foreground">
-            You can also paste a screenshot anywhere on this page.
-          </p>
+          {!quotaFull && (
+            <p className="text-xs text-muted-foreground">
+              You can also paste a screenshot anywhere on this page.
+            </p>
+          )}
         </div>
 
-        {/* Upload progress */}
         {libraryUpload && (
           <div className="mb-6 space-y-1">
             <div className="flex justify-between text-xs text-muted-foreground">
@@ -175,7 +383,7 @@ export default function DocumentsPage() {
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-primary transition-all duration-200"
+                className="h-full rounded-full bg-teal transition-all duration-200"
                 style={{ width: `${libraryUpload.percent ?? 0}%` }}
               />
             </div>
@@ -186,9 +394,18 @@ export default function DocumentsPage() {
           {docs.data?.map((d) => (
             <div
               key={d.id}
-              className="flex flex-col rounded-xl border border-border/60 bg-card p-3 shadow-soft"
+              className={cn(
+                "flex flex-col rounded-xl border border-border/60 bg-card p-3 shadow-soft",
+                selected.has(d.id) && "ring-2 ring-teal/40",
+              )}
             >
-              <div className="flex items-start gap-3">
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  className="mt-1"
+                  checked={selected.has(d.id)}
+                  onCheckedChange={() => toggleOne(d.id)}
+                  aria-label={`Select ${d.filename}`}
+                />
                 <FileText className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div
@@ -207,7 +424,31 @@ export default function DocumentsPage() {
                     <span className="text-xs text-muted-foreground">
                       {d.kind}
                     </span>
+                    {d.size_bytes != null && d.size_bytes > 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatBytes(d.size_bytes)}
+                      </span>
+                    )}
                   </div>
+                  {d.created_at && (
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {new Date(d.created_at).toLocaleString()}
+                    </p>
+                  )}
+                  {d.projects && d.projects.length > 0 && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <FolderOpen className="h-3 w-3 text-muted-foreground" />
+                      {d.projects.map((p) => (
+                        <Badge
+                          key={p.id}
+                          variant="secondary"
+                          className="text-[10px] font-normal"
+                        >
+                          {p.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                   {d.error && (
                     <div
                       className="mt-1 truncate text-xs text-gap"
@@ -219,7 +460,7 @@ export default function DocumentsPage() {
                 </div>
               </div>
 
-              <div className="mt-2 flex items-center gap-1 border-t border-border/40 pt-2">
+              <div className="mt-2 flex items-center gap-1 border-t border-border/40 pt-2 pl-6">
                 <Button
                   size="sm"
                   variant="ghost"
@@ -266,20 +507,25 @@ export default function DocumentsPage() {
           ))}
         </div>
 
-        {docs.data?.length === 0 && (
+        {docs.data?.length === 0 && !docs.isLoading && (
           <div className="rounded-2xl border border-dashed border-border py-12 text-center">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
               <FileText className="h-5 w-5 text-muted-foreground" />
             </div>
-            <p className="text-sm font-medium">No documents yet</p>
+            <p className="text-sm font-medium">
+              {projectFilter !== "all"
+                ? "No documents match this filter"
+                : "No documents yet"}
+            </p>
             <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
-              Upload past quotations, BOMs, contracts, photos — anything you
-              want the assistant to know about.
+              {projectFilter !== "all"
+                ? "Try a different project filter or upload new files."
+                : "Upload past quotations, BOMs, contracts, photos — anything you want the assistant to know about."}
             </p>
           </div>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }
 
@@ -314,7 +560,7 @@ function CommentSection({ docId }: { docId: string }) {
   });
 
   return (
-    <div className="mt-2 space-y-2 border-t border-border/40 pt-2">
+    <div className="mt-2 space-y-2 border-t border-border/40 pt-2 pl-6">
       {comments.data?.map((c) => (
         <div key={c.id} className="group flex items-start gap-2">
           <div className="min-w-0 flex-1 rounded-lg bg-muted/60 px-2.5 py-1.5">

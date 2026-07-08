@@ -19,6 +19,33 @@ from app.matrix.landed_cost import landed_unit_cost, spread_pct, to_decimal
 
 LOW_CONFIDENCE = 0.7
 
+# field_type values that are surfaced as named keys in the cell dict
+_NAMED_EXTRA_TYPES = {"payment_terms", "warranty", "validity_days"}
+
+
+def _extra_fields_from_backing(backing: list[ExtractedField]) -> dict:
+    """Extract named extra fields and spec:* fields from backing ExtractedField rows.
+
+    Returns a dict with keys: payment_terms, warranty, validity_days (str or None),
+    plus any spec:<name> keys.
+    """
+    result: dict[str, str | None] = {}
+    for f in backing:
+        ft = f.field_type
+        if ft in _NAMED_EXTRA_TYPES and ft not in result:
+            if ft == "validity_days" and f.value_num is not None:
+                result[ft] = f"{int(f.value_num)} days"
+            else:
+                result[ft] = f.value_text
+        elif ft.startswith("spec:") and ft not in result:
+            val = f.value_text
+            if val is None and f.value_num is not None:
+                val = str(f.value_num)
+                if f.unit:
+                    val = f"{val} {f.unit}"
+            result[ft] = val
+    return result
+
 
 def resolve_assumptions(project: Project, overrides: dict | None = None) -> dict:
     """Merge project landed_cost_defaults with per-request overrides."""
@@ -136,23 +163,40 @@ async def build_matrix(
             quote = quote_map.get((sup.id, item.id))
             backing = field_map.get((sup.id, item.id), [])
             field_ids = [str(f.id) for f in backing]
-            if quote is None:
+            extra = _extra_fields_from_backing(backing)
+            spec_fields = {k: v for k, v in extra.items() if k.startswith("spec:")}
+
+            unit_price = to_decimal(quote.unit_price) if quote is not None else None
+            # A quote without a unit price is still a gap for comparison purposes.
+            if quote is None or unit_price is None:
                 cells[str(sup.id)] = {
                     "supplier_id": str(sup.id),
-                    "quote_id": None,
-                    "document_id": None,
+                    "quote_id": str(quote.id) if quote is not None else None,
+                    "document_id": (
+                        str(quote.document_id)
+                        if quote is not None and quote.document_id
+                        else None
+                    ),
                     "fob": None,
                     "landed": None,
                     "currency": target_ccy,
-                    "moq": None,
-                    "lead_time_days": None,
+                    "moq": _num(to_decimal(quote.moq)) if quote is not None else None,
+                    "lead_time_days": quote.lead_time_days if quote is not None else None,
+                    "incoterms": quote.incoterms if quote is not None else None,
+                    "valid_until": (
+                        quote.valid_until.isoformat()
+                        if quote is not None and quote.valid_until
+                        else None
+                    ),
+                    "payment_terms": extra.get("payment_terms"),
+                    "warranty": extra.get("warranty"),
+                    "validity_days": extra.get("validity_days"),
+                    "extra_fields": spec_fields,
                     "confidence_state": "gap",
                     "best_value": False,
                     "field_ids": field_ids,
                 }
                 continue
-
-            unit_price = to_decimal(quote.unit_price)
             quote_ccy = (quote.currency or target_ccy).upper()
             fob: Decimal | None = None
             landed: Decimal | None = None
@@ -186,6 +230,14 @@ async def build_matrix(
                 "currency": target_ccy,
                 "moq": _num(to_decimal(quote.moq)),
                 "lead_time_days": quote.lead_time_days,
+                "incoterms": quote.incoterms,
+                "valid_until": (
+                    quote.valid_until.isoformat() if quote.valid_until else None
+                ),
+                "payment_terms": extra.get("payment_terms"),
+                "warranty": extra.get("warranty"),
+                "validity_days": extra.get("validity_days"),
+                "extra_fields": spec_fields,
                 "confidence_state": state,
                 "best_value": False,
                 "field_ids": field_ids,

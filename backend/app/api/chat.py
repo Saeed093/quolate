@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import get_owned_project
+from app.api.gpu import ensure_chat_on_gpu
 from app.auth.deps import get_current_user
 from app.chat.loop import run_chat_stream
 from app.chat.tools import ChatContext
@@ -129,6 +130,9 @@ async def post_chat(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
+    # GPU-only policy: refuse before touching history so the user message
+    # isn't saved without a reply.
+    await ensure_chat_on_gpu()
     project = await get_owned_project(project_id, user, session)
 
     history = await _load_history(session, user.id, project_id)
@@ -177,6 +181,7 @@ async def post_global_chat(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
+    await ensure_chat_on_gpu()
     history = await _load_history(session, user.id, None)
     await _save_message(
         session,

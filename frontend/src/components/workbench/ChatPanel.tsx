@@ -114,10 +114,13 @@ export function ChatPanel({
           }
         },
       );
-    } catch {
+    } catch (err) {
       update((msg) => ({
         ...msg,
-        content: "Sorry, the chat request failed.",
+        content:
+          err instanceof Error && err.message
+            ? err.message
+            : "Sorry, the chat request failed.",
         streaming: false,
       }));
     } finally {
@@ -153,7 +156,7 @@ export function ChatPanel({
               className={cn(
                 "group relative max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
                 m.role === "user"
-                  ? "gradient-primary text-white rounded-br-md"
+                  ? "bg-ink-deep text-paper rounded-br-md"
                   : "bg-muted/80 text-foreground rounded-bl-md",
               )}
             >
@@ -181,7 +184,7 @@ export function ChatPanel({
                   {m.tools.map((t, j) => (
                     <span
                       key={j}
-                      className="animate-fade-in-up inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                      className="animate-fade-in-up inline-flex items-center gap-1 rounded-full bg-teal/10 px-2 py-0.5 text-[10px] font-medium text-teal"
                     >
                       <Wrench className="h-2.5 w-2.5" />{" "}
                       {t === "retrieve_context" ? "Searched your database" : t}
@@ -225,7 +228,7 @@ export function ChatPanel({
             "h-9 w-9 shrink-0 rounded-xl transition-all",
             busy
               ? "animate-pulse"
-              : "gradient-primary hover:shadow-glow",
+              : "bg-ink-deep hover:bg-ink",
           )}
         >
           {busy ? (

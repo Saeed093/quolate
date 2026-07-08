@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LlmStatusBadge } from "@/components/LlmStatusBadge";
+import { QuolateLockup } from "@/components/QuolateLockup";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -31,19 +32,70 @@ const LINKS = [
 function isActive(pathname: string | null, href: string, exact?: boolean) {
   if (!pathname) return false;
   if (exact) {
-    // "Tenders" shouldn't light up while on /tenders/sources.
     return pathname.startsWith(href) && !pathname.startsWith("/tenders/sources");
   }
   return pathname.startsWith(href);
 }
 
-export function AppNav() {
+function SidebarNav({
+  pathname,
+  badgeCount,
+  onNavigate,
+  className,
+}: {
+  pathname: string | null;
+  badgeCount: number;
+  onNavigate?: () => void;
+  className?: string;
+}) {
+  return (
+    <nav className={cn("flex flex-1 flex-col gap-1 px-3 py-2", className)}>
+      {LINKS.map((l) => {
+        const active = isActive(pathname, l.href, l.exact);
+        const Icon = l.icon;
+        return (
+          <Link
+            key={l.href}
+            href={l.href}
+            onClick={onNavigate}
+            className={cn(
+              "relative flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-soft transition-colors hover:bg-white/8 hover:text-paper",
+              active && "bg-white/8 text-paper",
+            )}
+          >
+            {active && (
+              <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-teal" />
+            )}
+            <Icon className="h-4 w-4 shrink-0" />
+            <span className="truncate">{l.label}</span>
+            {l.href === "/tenders" && badgeCount > 0 && (
+              <Badge
+                variant="gap"
+                className="ml-auto h-4 min-w-4 justify-center px-1 text-[10px]"
+              >
+                {badgeCount}
+              </Badge>
+            )}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function AppShell({
+  children,
+  fullHeight,
+}: {
+  children: React.ReactNode;
+  fullHeight?: boolean;
+}) {
   const router = useRouter();
   const pathname = usePathname();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
-    setMenuOpen(false);
+    setSidebarOpen(false);
   }, [pathname]);
 
   const badge = useQuery({
@@ -59,116 +111,85 @@ export function AppNav() {
   }
 
   return (
-    <header className="sticky top-0 z-30 border-b border-border/40 glass shadow-soft">
-      <div className="flex h-14 items-center justify-between gap-2 px-4 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3 lg:gap-6">
-          <Link href="/projects" className="flex shrink-0 items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl gradient-primary text-xs font-bold text-white shadow-soft">
-              Q
-            </span>
-            <span className="text-base font-semibold tracking-tight">
-              Quolate
-            </span>
-          </Link>
+    <div
+      className={cn("flex", fullHeight ? "h-screen overflow-hidden" : "min-h-screen")}
+    >
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
-          {/* Desktop nav */}
-          <nav className="hidden items-center gap-0.5 md:flex">
-            {LINKS.map((l) => {
-              const active = isActive(pathname, l.href, l.exact);
-              return (
-                <Link
-                  key={l.href}
-                  href={l.href}
-                  className={cn(
-                    "relative rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-                    active && "bg-accent text-accent-foreground",
-                  )}
-                >
-                  {l.label}
-                  {active && (
-                    <span className="absolute inset-x-3 -bottom-[13px] h-0.5 rounded-full bg-primary" />
-                  )}
-                  {l.href === "/tenders" && badgeCount > 0 && (
-                    <Badge
-                      variant="gap"
-                      className="absolute -right-1.5 -top-1.5 h-4 min-w-4 justify-center px-1 text-[10px]"
-                    >
-                      {badgeCount}
-                    </Badge>
-                  )}
-                </Link>
-              );
-            })}
-          </nav>
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-white/10 bg-ink-deep text-paper shadow-soft transition-transform duration-200 ease-out md:sticky md:top-0 md:z-30 md:h-screen md:translate-x-0",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full",
+        )}
+      >
+        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-white/10 px-4">
+          <Link
+            href="/projects"
+            className="min-w-0"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <QuolateLockup variant="dark" />
+          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-paper hover:bg-white/10 hover:text-paper md:hidden"
+            aria-label="Close navigation"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X className="h-5 w-5" />
+          </Button>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          <LlmStatusBadge className="hidden sm:inline-flex" />
+        <SidebarNav
+          pathname={pathname}
+          badgeCount={badgeCount}
+          onNavigate={() => setSidebarOpen(false)}
+        />
+
+        <div className="mt-auto flex flex-col gap-2 border-t border-white/10 px-3 py-3">
+          <LlmStatusBadge className="dark-surface" />
           <Button
             variant="ghost"
             size="sm"
-            className="hidden gap-1.5 text-muted-foreground hover:text-foreground md:inline-flex"
+            className="w-full justify-start gap-1.5 text-slate-soft hover:bg-white/10 hover:text-paper"
             onClick={signOut}
           >
             <LogOut className="h-3.5 w-3.5" />
             Sign out
           </Button>
+        </div>
+      </aside>
 
-          {/* Mobile menu toggle */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-border bg-paper px-4 shadow-soft md:hidden">
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden"
-            aria-label={menuOpen ? "Close menu" : "Open menu"}
-            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Open navigation"
+            onClick={() => setSidebarOpen(true)}
           >
-            {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            <Menu className="h-5 w-5" />
           </Button>
+          <Link href="/projects">
+            <QuolateLockup variant="sm" />
+          </Link>
+        </header>
+
+        <div className={cn("flex min-h-0 flex-1 flex-col", fullHeight && "overflow-hidden")}>
+          {children}
         </div>
       </div>
-
-      {/* Mobile nav panel */}
-      {menuOpen && (
-        <nav className="animate-fade-in-up border-t border-border/40 px-3 py-2 md:hidden">
-          {LINKS.map((l) => {
-            const active = isActive(pathname, l.href, l.exact);
-            const Icon = l.icon;
-            return (
-              <Link
-                key={l.href}
-                href={l.href}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
-                  active && "bg-accent text-accent-foreground",
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {l.label}
-                {l.href === "/tenders" && badgeCount > 0 && (
-                  <Badge
-                    variant="gap"
-                    className="ml-auto h-4 min-w-4 justify-center px-1 text-[10px]"
-                  >
-                    {badgeCount}
-                  </Badge>
-                )}
-              </Link>
-            );
-          })}
-          <div className="mt-1 flex items-center justify-between border-t border-border/40 px-3 pb-1 pt-2.5">
-            <LlmStatusBadge />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 text-muted-foreground hover:text-foreground"
-              onClick={signOut}
-            >
-              <LogOut className="h-3.5 w-3.5" />
-              Sign out
-            </Button>
-          </div>
-        </nav>
-      )}
-    </header>
+    </div>
   );
 }
+
+/** @deprecated Use AppShell instead */
+export const AppNav = AppShell;

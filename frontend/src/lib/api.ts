@@ -1,6 +1,8 @@
 // Typed API client. The ONLY way the frontend talks to the backend.
 // Base URL comes from env so cloud migration only changes NEXT_PUBLIC_API_URL.
 
+import { logClientError } from "@/lib/error-log";
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TOKEN_KEY = "quolate_token";
@@ -64,7 +66,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const action = `${options.method ?? "GET"} ${path}`;
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  } catch (err) {
+    logClientError(action, err);
+    throw err;
+  }
   if (!res.ok) {
     let detail: unknown = res.statusText;
     try {
@@ -73,7 +82,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, formatErrorDetail(detail));
+    const apiError = new ApiError(res.status, formatErrorDetail(detail));
+    logClientError(action, apiError, res.status);
+    throw apiError;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -131,6 +142,7 @@ export interface Document {
   ocr_used: boolean;
   error: string | null;
   created_at: string;
+  auto_bom_created?: number;
 }
 
 export interface ExtractedField {
@@ -168,6 +180,12 @@ export interface MatrixCell {
   currency: string;
   moq: number | null;
   lead_time_days: number | null;
+  incoterms: string | null;
+  valid_until: string | null;
+  payment_terms: string | null;
+  warranty: string | null;
+  validity_days: string | null;
+  extra_fields: Record<string, string | null>;
   confidence_state: CellState;
   best_value: boolean;
   field_ids: string[];
@@ -232,6 +250,20 @@ export interface LibraryDocument {
   error: string | null;
   comment_count?: number;
   created_at: string | null;
+  size_bytes?: number;
+  projects?: { id: string; name: string }[];
+}
+
+export interface LibraryQuota {
+  used_bytes: number;
+  limit_bytes: number;
+  document_count: number;
+  remaining_bytes: number;
+}
+
+export interface LibraryListParams {
+  sort?: "newest" | "oldest" | "name";
+  project_id?: string;
 }
 
 export interface DocumentComment {
@@ -494,6 +526,17 @@ export interface LlmStatus {
   gpu: boolean;
   gpu_name: string | null;
   vram_used: string | null;
+  gpu_installed: boolean;
+  model_loaded: boolean;
+  model_fully_on_gpu: boolean;
+  chat_available: boolean;
+  reason:
+    | "ollama_offline"
+    | "no_gpu"
+    | "model_not_loaded"
+    | "model_on_cpu"
+    | "insufficient_vram"
+    | null;
 }
 
 export interface TenderPullActivity {
@@ -564,7 +607,15 @@ async function streamChatTo(
       signal: controller.signal,
     });
     if (!res.ok || !res.body) {
-      throw new ApiError(res.status, "Chat request failed");
+      let detail: unknown = "Chat request failed";
+      try {
+        detail = (await res.json()).detail ?? detail;
+      } catch {
+        /* ignore */
+      }
+      const apiError = new ApiError(res.status, formatErrorDetail(detail));
+      logClientError(`POST ${path} (chat)`, apiError, res.status);
+      throw apiError;
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -589,8 +640,15 @@ async function streamChatTo(
     }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new ApiError(0, "Request timed out. Please try again or simplify your message.");
+      const timeoutError = new ApiError(
+        0,
+        "Request timed out. Please try again or simplify your message.",
+      );
+      logClientError(`POST ${path} (chat)`, timeoutError);
+      throw timeoutError;
     }
+    // ApiErrors were already logged where they were thrown.
+    if (!(err instanceof ApiError)) logClientError(`POST ${path} (chat)`, err);
     throw err;
   } finally {
     clearTimeout(timeoutId);
@@ -667,6 +725,7 @@ async function streamPullSource(
 export const api = {
   health: () => request<{ status: string }>("/health"),
   llmStatus: () => request<LlmStatus>("/status/llm"),
+  startGpu: () => request<LlmStatus>("/gpu/start", { method: "POST" }),
 
   register: (email: string, password: string, displayName?: string) =>
     request<User>("/auth/register", {
@@ -699,6 +758,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  deleteProject: (id: string) =>
+    request<void>(`/projects/${id}`, { method: "DELETE" }),
 
   // BOM
   listBom: (pid: string) => request<BomItem[]>(`/projects/${pid}/bom`),
@@ -745,6 +806,10 @@ export const api = {
   },
   reviewDocument: (docId: string) =>
     request<DocumentReview>(`/documents/${docId}/review`),
+  reparseDocument: (docId: string) =>
+    request<Document>(`/documents/${docId}/reparse`, { method: "POST" }),
+  markReviewed: (docId: string) =>
+    request<Document>(`/documents/${docId}/mark-reviewed`, { method: "POST" }),
   pageImageUrl: (docId: string, page: number) =>
     apiUrl(`/documents/${docId}/pages/${page}.png`),
   updateField: (fieldId: string, patch: Partial<ExtractedField>) =>
@@ -771,8 +836,11 @@ export const api = {
   streamGlobalChat,
 
   // Library ("My Documents")
-  listLibraryDocuments: () =>
-    request<LibraryDocument[]>(`/library/documents`),
+  libraryQuota: () => request<LibraryQuota>(`/library/quota`),
+  listLibraryDocuments: (params?: LibraryListParams) =>
+    request<LibraryDocument[]>(
+      `/library/documents${qs(params as Record<string, unknown>)}`,
+    ),
   // XHR-based so upload progress can be reported (fetch can't).
   uploadLibraryDocuments: (
     files: File[],
@@ -809,6 +877,11 @@ export const api = {
     request<{ deleted: string }>(`/library/documents/${id}`, {
       method: "DELETE",
     }),
+  bulkDeleteLibraryDocuments: (ids: string[]) =>
+    request<{ deleted: string[]; not_found: string[]; count: number }>(
+      `/library/documents/bulk-delete`,
+      { method: "POST", body: JSON.stringify({ ids }) },
+    ),
   libraryDocumentUrl: (id: string, inline = false) =>
     apiUrl(`/library/documents/${id}/original${inline ? "?inline=1" : ""}`),
   // Fetch the file with auth and open/save it via a blob URL (plain <a href>
@@ -944,4 +1017,124 @@ export const api = {
     }),
   deleteSavedFilter: (id: string) =>
     request<void>(`/saved-filters/${id}`, { method: "DELETE" }),
+};
+
+// ---- Admin console (compliance) ----
+// Separate credential/token pair from the normal user session.
+
+const ADMIN_TOKEN_KEY = "quolate_admin_token";
+
+export function setAdminToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token);
+  else localStorage.removeItem(ADMIN_TOKEN_KEY);
+}
+
+export function getAdminToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(ADMIN_TOKEN_KEY);
+}
+
+export interface AdminUserSummary {
+  id: string;
+  email: string;
+  display_name: string | null;
+  created_at: string;
+  counts: {
+    projects: number;
+    documents: number;
+    library_documents: number;
+    chat_messages: number;
+    duty_calculations: number;
+    audit_events: number;
+  };
+}
+
+export interface AdminAuditEvent {
+  created_at: string;
+  action: string;
+  method: string;
+  path: string;
+  query: string | null;
+  status_code: number;
+}
+
+export interface AdminUserActivity {
+  user: {
+    id: string;
+    email: string;
+    display_name: string | null;
+    created_at: string;
+  };
+  events: AdminAuditEvent[];
+  projects: { id: string; name: string; status: string; created_at: string }[];
+  documents: {
+    id: string;
+    filename: string;
+    kind: string;
+    status: string;
+    project: string | null;
+    created_at: string;
+  }[];
+  library_documents: {
+    id: string;
+    filename: string;
+    kind: string;
+    status: string;
+    created_at: string;
+  }[];
+  chat_messages: { content: string; created_at: string }[];
+}
+
+async function adminRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(options.headers);
+  const token = getAdminToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (options.body) headers.set("Content-Type", "application/json");
+
+  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  if (!res.ok) {
+    let detail: unknown = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* ignore */
+    }
+    const apiError = new ApiError(res.status, formatErrorDetail(detail));
+    logClientError(`${options.method ?? "GET"} ${path} (admin)`, apiError, res.status);
+    throw apiError;
+  }
+  return (await res.json()) as T;
+}
+
+export const adminApi = {
+  login: async (username: string, password: string) => {
+    const token = await adminRequest<AuthToken>("/admin/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    setAdminToken(token.access_token);
+    return token;
+  },
+  logout: () => setAdminToken(null),
+  users: () => adminRequest<AdminUserSummary[]>("/admin/users"),
+  userActivity: (userId: string) =>
+    adminRequest<AdminUserActivity>(`/admin/users/${userId}/activity`),
+  downloadActivityCsv: async (userId: string, email: string) => {
+    const token = getAdminToken();
+    const res = await fetch(`${BASE_URL}/admin/users/${userId}/activity.csv`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new ApiError(res.status, "Could not download CSV");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `activity-${email}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  },
 };

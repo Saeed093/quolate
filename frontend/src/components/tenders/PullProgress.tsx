@@ -68,11 +68,11 @@ export function PullProgress({
             : `Processing ${summary.processed}/${summary.total}…`;
 
   return (
-    <Card className="mb-4 border-primary/30">
+    <Card className="mb-4 border-teal/30">
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="flex items-center gap-2 text-sm">
           {running ? (
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            <Loader2 className="h-4 w-4 animate-spin text-teal" />
           ) : summary.done?.status === "ok" ? (
             <CheckCircle2 className="h-4 w-4 text-ok" />
           ) : (

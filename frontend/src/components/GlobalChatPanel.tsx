@@ -6,6 +6,7 @@ import { Send, Loader2, Wrench, Bot, User } from "lucide-react";
 import { api, type ChatEvent } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useChat } from "@/contexts/ChatContext";
 import { ChatMessageContent } from "@/components/ChatMessageContent";
 import { cn } from "@/lib/utils";
 
@@ -39,8 +40,15 @@ function TypingDots() {
 export function GlobalChatPanel() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyLocal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { setBusy: setGlobalBusy } = useChat();
+
+  // Mirror into ChatContext so GpuGate won't unmount the panel mid-stream.
+  function setBusy(b: boolean) {
+    setBusyLocal(b);
+    setGlobalBusy(b);
+  }
 
   const history = useQuery({
     queryKey: ["global-chat-history"],
@@ -145,7 +153,7 @@ export function GlobalChatPanel() {
               className={cn(
                 "group relative max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
                 m.role === "user"
-                  ? "gradient-primary text-white rounded-br-md"
+                  ? "bg-ink-deep text-paper rounded-br-md"
                   : "bg-muted/80 text-foreground rounded-bl-md",
               )}
             >
@@ -171,7 +179,7 @@ export function GlobalChatPanel() {
                   {m.tools.map((t, j) => (
                     <span
                       key={j}
-                      className="animate-fade-in-up inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                      className="animate-fade-in-up inline-flex items-center gap-1 rounded-full bg-teal/10 px-2 py-0.5 text-[10px] font-medium text-teal"
                     >
                       <Wrench className="h-2.5 w-2.5" /> {TOOL_LABELS[t] ?? t}
                     </span>
@@ -211,7 +219,7 @@ export function GlobalChatPanel() {
           aria-label="Send"
           className={cn(
             "h-9 w-9 shrink-0 rounded-xl transition-all",
-            busy ? "animate-pulse" : "gradient-primary hover:shadow-glow",
+            busy ? "animate-pulse" : "bg-ink-deep hover:bg-ink",
           )}
         >
           {busy ? (

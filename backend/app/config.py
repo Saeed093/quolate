@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_hours: int = 24
 
+    # Admin console (compliance). Override in .env for production.
+    admin_username: str = "admin"
+    admin_password: str = "admin1963"
+    admin_token_expire_hours: int = 8
+
     # Storage
     file_storage_path: str = "./data/files"
 
@@ -44,6 +49,14 @@ class Settings(BaseSettings):
     llm_request_timeout_seconds: float = 300.0  # interactive chat calls (5min for CPU-bound models)
     llm_fast_timeout_seconds: float = 120.0  # non-interactive (classify/extract) (2min)
     llm_disable_thinking_for_fast_calls: bool = True
+    # GPU-only chat policy: chat is refused unless the model is fully in GPU
+    # VRAM. Set false to allow CPU chat (e.g. live tests on CPU machines).
+    llm_require_gpu_for_chat: bool = True
+    # Use Ollama's native /api/chat (honors num_ctx/keep_alive, unlike the
+    # /v1 shim). Set false for hosted OpenAI-compatible APIs.
+    llm_native_ollama: bool = True
+    llm_keep_alive: str = "2h"  # how long Ollama keeps the model warm
+    gpu_load_timeout_seconds: float = 300.0  # /gpu/start model-load timeout
 
     # Embeddings
     embedding_model: str = "bge-m3"
@@ -56,6 +69,9 @@ class Settings(BaseSettings):
     scrape_cron: str = "0 7 * * *"
     scrape_user_agent: str = "QuolateBot/0.1 (+contact@quolate.local)"
     tender_keep_limit: int = 50  # cleanup keeps this many newest tenders
+
+    # Global document library storage cap per user (bytes).
+    library_quota_bytes: int = 500 * 1024 * 1024  # 500 MB
 
     # CORS
     allow_origins: str = "http://localhost:3000"

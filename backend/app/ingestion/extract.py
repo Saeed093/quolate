@@ -13,8 +13,9 @@ MIN_CHARS_PER_PAGE = 50  # below this average -> treat PDF as scanned, use OCR
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 _PDF_EXTS = {".pdf"}
-_XLSX_EXTS = {".xlsx", ".xlsm", ".xls"}
-_CSV_EXTS = {".csv"}
+_XLSX_EXTS = {".xlsx", ".xlsm"}
+_LEGACY_XLS_EXTS = {".xls"}
+_CSV_EXTS = {".csv", ".tsv"}
 _EMAIL_EXTS = {".eml"}
 _TEXT_EXTS = {".txt"}
 _ZIP_EXTS = {".zip"}
@@ -77,7 +78,17 @@ def _extract_image(data: bytes, page_no: int = 1) -> PageContent:
 def _extract_xlsx(data: bytes) -> ExtractedContent:
     from openpyxl import load_workbook
 
-    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "zip" in msg or "not a zip" in msg:
+            raise ValueError(
+                "Cannot open spreadsheet: the file may be in legacy .xls format "
+                "(not supported by this parser — please re-save as .xlsx) or is "
+                "corrupted."
+            ) from exc
+        raise
     parts: list[str] = []
     for ws in wb.worksheets:
         parts.append(f"# Sheet: {ws.title}")
@@ -92,10 +103,24 @@ def _extract_xlsx(data: bytes) -> ExtractedContent:
     )
 
 
-def _extract_csv(data: bytes) -> ExtractedContent:
+def _extract_csv(data: bytes, sep: str = ",") -> ExtractedContent:
     import pandas as pd
 
-    df = pd.read_csv(io.BytesIO(data), dtype=str, keep_default_na=False)
+    # Auto-detect separator for TSV vs CSV.
+    try:
+        df = pd.read_csv(
+            io.BytesIO(data),
+            sep=sep,
+            dtype=str,
+            keep_default_na=False,
+            engine="python",
+        )
+    except Exception:
+        # Last-ditch: decode as plain text so the LLM still sees something.
+        text = data.decode("utf-8", errors="replace")
+        return ExtractedContent(
+            pages=[PageContent(page_no=1, text=text)], kind_detail="csv_raw"
+        )
     text = df.to_csv(sep="\t", index=False)
     return ExtractedContent(
         pages=[PageContent(page_no=1, text=text)], kind_detail="csv"
@@ -229,10 +254,19 @@ def extract_content(filename: str, mime_type: str | None, data: bytes) -> Extrac
     if ext in _IMAGE_EXTS or mime.startswith("image/"):
         page = _extract_image(data)
         return ExtractedContent(pages=[page], ocr_used=True, kind_detail="image")
+    # Check CSV/TSV by extension FIRST — before MIME-based xlsx routing because
+    # some browsers/tools send CSV files with application/vnd.ms-excel MIME type.
+    if ext in _CSV_EXTS:
+        sep = "\t" if ext == ".tsv" else ","
+        return _extract_csv(data, sep=sep)
     if ext in _XLSX_EXTS or "spreadsheet" in mime or "excel" in mime:
         return _extract_xlsx(data)
-    if ext in _CSV_EXTS or "csv" in mime:
+    if "csv" in mime:
         return _extract_csv(data)
+    if ext in _LEGACY_XLS_EXTS:
+        raise ValueError(
+            "Legacy .xls files are not supported — please re-save as .xlsx and re-upload."
+        )
     if ext in _EMAIL_EXTS or "message/rfc822" in mime:
         return _extract_email(data)
     if ext in _DOCX_EXTS or "wordprocessingml" in mime:

@@ -15,6 +15,7 @@ export function LlmStatusBadge({ className }: { className?: string }) {
   const online = data?.online ?? false;
   const gpu = data?.gpu ?? false;
   const label = !online ? "Offline" : gpu ? "GPU" : "CPU";
+  const onDark = className?.includes("dark-surface");
 
   return (
     <div
@@ -23,7 +24,9 @@ export function LlmStatusBadge({ className }: { className?: string }) {
         online
           ? gpu
             ? "border-ok/30 bg-ok/10 text-ok"
-            : "border-primary/20 bg-primary/5 text-primary"
+            : onDark
+              ? "border-white/20 bg-white/8 text-slate-soft"
+              : "border-slate/20 bg-slate/10 text-slate"
           : "border-gap/30 bg-gap/10 text-gap",
         className,
       )}
