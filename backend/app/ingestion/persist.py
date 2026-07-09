@@ -23,6 +23,10 @@ from app.llm.embeddings import embed_text
 
 LOW_CONFIDENCE = 0.7
 _ROLLUP_TYPES = {"unit_price", "moq", "lead_time_days", "currency", "incoterms"}
+# Field types where a fuzzy part-name match to a BOM line makes sense. Terms
+# like incoterms/payment_terms are quotation-wide when bom_line_no is null —
+# fuzzy-matching their snippet onto a line would mis-bucket them.
+_FUZZY_MATCH_TYPES = {"unit_price", "moq", "spec"}
 _NUM_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 
 
@@ -217,7 +221,8 @@ async def persist_extraction(
         line_no = f.get("bom_line_no")
         bom_item_id = line_to_item.get(line_no) if line_no is not None else None
         # Fuzzy fallback: match source_snippet / value_text to a BOM part name.
-        if bom_item_id is None:
+        # Only for per-line field types — document-level terms stay unmatched.
+        if bom_item_id is None and field_type.split(":", 1)[0] in _FUZZY_MATCH_TYPES:
             bom_item_id = _match_bom_by_name(
                 f.get("source_snippet") or f.get("value_text"), bom_names
             )
@@ -278,7 +283,9 @@ async def _rollup_quotes(
     rollup: dict[uuid.UUID | None, dict],
 ) -> None:
     for bom_item_id, vals in rollup.items():
-        if not any(k in vals for k in ("unit_price", "moq", "lead_time_days")):
+        if not any(
+            k in vals for k in ("unit_price", "moq", "lead_time_days", "incoterms")
+        ):
             continue
         quote = Quote(
             project_id=document.project_id,

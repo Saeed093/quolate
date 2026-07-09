@@ -2,12 +2,17 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, ClipboardPaste } from "lucide-react";
-import { api, type BomItem } from "@/lib/api";
+import { Plus, Trash2, ClipboardPaste, Loader2, Sparkles } from "lucide-react";
+import { api, type BomItem, type HsClassificationResult } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { toast } from "@/components/ui/use-toast";
 import { parseBomTsv } from "@/lib/tsv";
 
@@ -125,6 +130,9 @@ export function BomTab({ projectId }: { projectId: string }) {
                 <th className="px-2 py-2.5 font-semibold">Spec</th>
                 <th className="w-24 px-2 py-2.5 font-semibold">Qty</th>
                 <th className="w-28 px-2 py-2.5 font-semibold">Target</th>
+                <th className="w-40 px-2 py-2.5 font-semibold" title="Pakistan PCT/HS code — used for statutory duty in the matrix">
+                  HS code
+                </th>
                 <th className="w-10 px-2 py-2.5" />
               </tr>
             </thead>
@@ -132,6 +140,7 @@ export function BomTab({ projectId }: { projectId: string }) {
               {bom.data?.map((item) => (
                 <BomRow
                   key={item.id}
+                  projectId={projectId}
                   item={item}
                   onSave={(patch) => update.mutate({ id: item.id, patch })}
                   onDelete={() => del.mutate(item.id)}
@@ -140,7 +149,7 @@ export function BomTab({ projectId }: { projectId: string }) {
               {bom.data?.length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-2 py-6 text-center text-muted-foreground"
                   >
                     No BOM lines yet.
@@ -203,10 +212,12 @@ export function BomTab({ projectId }: { projectId: string }) {
 }
 
 function BomRow({
+  projectId,
   item,
   onSave,
   onDelete,
 }: {
+  projectId: string;
   item: BomItem;
   onSave: (patch: Partial<BomItem>) => void;
   onDelete: () => void;
@@ -230,12 +241,113 @@ function BomRow({
         value={item.target_price ?? ""}
         onSave={(v) => onSave({ target_price: v || null })}
       />
+      <HsCodeCell projectId={projectId} item={item} onSave={onSave} />
       <td className="px-2 py-1">
         <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete row">
           <Trash2 className="h-4 w-4" />
         </Button>
       </td>
     </tr>
+  );
+}
+
+function HsCodeCell({
+  projectId,
+  item,
+  onSave,
+}: {
+  projectId: string;
+  item: BomItem;
+  onSave: (patch: Partial<BomItem>) => void;
+}) {
+  const [local, setLocal] = useState(item.hs_code ?? "");
+  const [open, setOpen] = useState(false);
+
+  const suggest = useMutation({
+    mutationFn: () => api.classifyBomHs(projectId, item.id),
+    onSuccess: (result: HsClassificationResult) => {
+      if (!result.candidates.length) {
+        toast({ title: "No HS code suggestions for this line" });
+        return;
+      }
+      setOpen(true);
+    },
+    onError: () =>
+      toast({
+        title: "HS suggestion failed — is the AI model running?",
+        variant: "destructive",
+      }),
+  });
+
+  function apply(code: string) {
+    setLocal(code);
+    setOpen(false);
+    onSave({ hs_code: code });
+  }
+
+  return (
+    <td className="px-1 py-1">
+      <div className="flex items-center gap-1">
+        <input
+          className="w-full rounded bg-transparent px-1 py-1 font-data text-sm outline-none focus:bg-muted"
+          placeholder="e.g. 8525.89.00"
+          value={local}
+          onChange={(e) => setLocal(e.target.value)}
+          onBlur={() => {
+            const v = local.trim();
+            if (v !== (item.hs_code ?? "")) onSave({ hs_code: v || null });
+          }}
+        />
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title="Suggest HS code (AI)"
+              disabled={suggest.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                suggest.mutate();
+              }}
+            >
+              {suggest.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-80 text-sm" align="end">
+            <p className="mb-2 text-xs font-semibold">
+              AI-suggested HS codes — verify before relying on them
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {(suggest.data?.candidates ?? []).map((c) => (
+                <button
+                  key={c.hs_code}
+                  type="button"
+                  className="rounded-md border border-border px-2 py-1.5 text-left transition-colors hover:bg-muted"
+                  onClick={() => apply(c.hs_code)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-data font-semibold">{c.hs_code}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {Math.round(c.confidence * 100)}%
+                    </span>
+                  </div>
+                  {c.reasoning && (
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {c.reasoning}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </td>
   );
 }
 

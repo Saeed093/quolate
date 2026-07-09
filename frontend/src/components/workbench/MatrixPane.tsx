@@ -60,20 +60,28 @@ function getFieldValue(cell: MatrixCell, field: string): string {
   }
 }
 
+// These core fields are always shown when at least one supplier has any quote,
+// so the user can see what data is present vs. missing at a glance.
+const ALWAYS_SHOW_FIELDS = new Set(["moq", "lead_time_days", "incoterms"]);
+
 /**
- * Determine which fields have at least one non-null value across all cells in a row.
- * Only fields with real data from at least one supplier are shown.
+ * Determine which fields to show for a BOM row.
+ *
+ * Core fields (MOQ, lead time, incoterms) are always shown when the row has
+ * at least one non-gap cell, making it easy to spot missing data.
+ *
+ * Optional fields (payment terms, warranty, validity, spec:*) only appear
+ * when at least one supplier actually provides them.
  */
 function getVisibleFields(cells: Record<string, MatrixCell | undefined>): string[] {
-  const present = new Set<string>();
+  const hasAnyQuote = Object.values(cells).some(
+    (c) => c && c.confidence_state !== "gap",
+  );
+  const present = new Set<string>(hasAnyQuote ? ALWAYS_SHOW_FIELDS : []);
   const specFields = new Set<string>();
 
   for (const cell of Object.values(cells)) {
     if (!cell) continue;
-    // Count a field as present even from gap cells that have extracted data
-    if (cell.moq != null) present.add("moq");
-    if (cell.lead_time_days != null) present.add("lead_time_days");
-    if (cell.incoterms) present.add("incoterms");
     if (cell.payment_terms) present.add("payment_terms");
     if (cell.warranty) present.add("warranty");
     if (cell.validity_days) present.add("validity_days");
@@ -296,7 +304,9 @@ function MatrixCellView({
   const metaSection = visibleFields.length > 0 ? (
     <div className="mt-1.5 w-full space-y-0.5 border-t border-border/40 pt-1.5">
       {visibleFields.map((field) => {
-        const val = isGap ? null : getFieldValue(cell!, field);
+        // Even gap cells can carry moq/lead_time from quotes that have no price,
+        // so always try to read the value and only fall back to null for missing cells.
+        const val = cell ? getFieldValue(cell, field) : null;
         const isEmpty = !val || val === "—";
         return (
           <div
@@ -366,6 +376,18 @@ function MatrixCellView({
         <dl className="space-y-1.5">
           <DetailRow k="Landed" v={formatCurrency(cell.landed, currency)} bold />
           <DetailRow k="FOB" v={formatCurrency(cell.fob, currency)} />
+          {cell.duty_source === "statutory" && cell.duty != null && (
+            <DetailRow
+              k={`Duty${cell.hs_code ? ` (HS ${cell.hs_code})` : ""}`}
+              v={formatCurrency(cell.duty, currency)}
+            />
+          )}
+          {cell.duty_source === "flat" && (cell.duty ?? 0) > 0 && (
+            <DetailRow
+              k="Duty (flat assumption)"
+              v={formatCurrency(cell.duty, currency)}
+            />
+          )}
           {cell.moq != null && (
             <DetailRow k="MOQ" v={formatNumber(cell.moq)} />
           )}
@@ -391,6 +413,33 @@ function MatrixCellView({
             v ? <DetailRow key={k} k={getFieldLabel(k)} v={v} /> : null,
           )}
         </dl>
+        {cell.duty_breakdown && (
+          <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-2">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Pakistan levy stack (PKR @ {formatNumber(cell.duty_breakdown.fx_rate)}/USD)
+            </p>
+            <dl className="space-y-0.5 text-xs">
+              <DetailRow
+                k="Assessed value"
+                v={`${formatNumber(cell.duty_breakdown.assessed_value_pkr)} PKR`}
+              />
+              {cell.duty_breakdown.levies
+                .filter((l) => l.amount_pkr > 0)
+                .map((l) => (
+                  <DetailRow
+                    key={l.levy_type}
+                    k={`${l.label} (${(l.rate * 100).toFixed(1)}%)`}
+                    v={`${formatNumber(l.amount_pkr)} PKR`}
+                  />
+                ))}
+              <DetailRow
+                k="Total duty & taxes"
+                v={`${formatNumber(cell.duty_breakdown.total_duty_tax_pkr)} PKR`}
+                bold
+              />
+            </dl>
+          </div>
+        )}
         {cell.document_id && (
           <Button
             size="sm"

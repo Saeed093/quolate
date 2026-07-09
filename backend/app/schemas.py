@@ -90,6 +90,7 @@ class BomItemCreate(BaseModel):
     quantity: Decimal | None = None
     target_price: Decimal | None = None
     notes: str | None = None
+    hs_code: str | None = None
 
 
 class BomItemUpdate(BaseModel):
@@ -99,6 +100,7 @@ class BomItemUpdate(BaseModel):
     quantity: Decimal | None = None
     target_price: Decimal | None = None
     notes: str | None = None
+    hs_code: str | None = None
 
 
 class BomItemOut(ORMModel):
@@ -110,6 +112,7 @@ class BomItemOut(ORMModel):
     quantity: Decimal | None
     target_price: Decimal | None
     notes: str | None
+    hs_code: str | None
 
 
 class BomPasteRequest(BaseModel):

@@ -73,6 +73,7 @@ def _upload_quote(
     price: float,
     confidence: float = 0.95,
     currency: str = "USD",
+    extra_fields: list[dict] | None = None,
 ) -> None:
     queue_responses(
         json.dumps(
@@ -87,7 +88,8 @@ def _upload_quote(
                         "currency": currency,
                         "confidence": confidence,
                         "source_snippet": f"{supplier} {part_price(line_no, price)}",
-                    }
+                    },
+                    *(extra_fields or []),
                 ],
             }
         )
@@ -194,3 +196,161 @@ def test_export_xlsx_opens_and_matches_matrix(auth_client):
 def _first_doc(auth_client, pid: str) -> str:
     docs = auth_client.get(f"/projects/{pid}/documents").json()
     return docs[0]["id"]
+
+
+# ---------- Document-level commercial terms ----------
+def test_doc_level_terms_surface_in_every_cell(auth_client):
+    pid = _project(auth_client)
+    l1 = _add_bom(auth_client, pid, "Widget A")
+    l2 = _add_bom(auth_client, pid, "Widget B")
+    _upload_quote(
+        auth_client,
+        pid,
+        supplier="ACME",
+        line_no=l1,
+        price=12.5,
+        extra_fields=[
+            {
+                "bom_line_no": l2,
+                "field_type": "unit_price",
+                "value_num": 8.0,
+                "confidence": 0.95,
+                "source_snippet": "L2 8.0",
+            },
+            # Quotation-wide terms: bom_line_no null.
+            {
+                "bom_line_no": None,
+                "field_type": "incoterms",
+                "value_text": "FOB",
+                "confidence": 0.9,
+                "source_snippet": "Terms: FOB Shenzhen",
+            },
+            {
+                "bom_line_no": None,
+                "field_type": "lead_time_days",
+                "value_num": 30,
+                "confidence": 0.9,
+                "source_snippet": "Lead time: 30 days",
+            },
+            {
+                "bom_line_no": None,
+                "field_type": "payment_terms",
+                "value_text": "T/T 30% deposit",
+                "confidence": 0.85,
+                "source_snippet": "Payment: T/T 30% deposit",
+            },
+        ],
+    )
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    suppliers = {s["name"]: s["id"] for s in matrix["suppliers"]}
+    for row in matrix["rows"]:
+        cell = row["cells"][suppliers["ACME"]]
+        assert cell["incoterms"] == "FOB"
+        assert cell["lead_time_days"] == 30
+        assert cell["payment_terms"] == "T/T 30% deposit"
+
+
+def test_line_level_term_wins_over_doc_level(auth_client):
+    pid = _project(auth_client)
+    line = _add_bom(auth_client, pid, "Widget A")
+    _upload_quote(
+        auth_client,
+        pid,
+        supplier="ACME",
+        line_no=line,
+        price=12.5,
+        extra_fields=[
+            {
+                "bom_line_no": line,
+                "field_type": "incoterms",
+                "value_text": "CIF",
+                "confidence": 0.9,
+                "source_snippet": "Widget A CIF Karachi",
+            },
+            {
+                "bom_line_no": None,
+                "field_type": "incoterms",
+                "value_text": "FOB",
+                "confidence": 0.9,
+                "source_snippet": "Other terms FOB",
+            },
+        ],
+    )
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    suppliers = {s["name"]: s["id"] for s in matrix["suppliers"]}
+    cell = matrix["rows"][0]["cells"][suppliers["ACME"]]
+    assert cell["incoterms"] == "CIF"
+
+
+def test_doc_level_term_not_fuzzy_matched_onto_one_line(auth_client):
+    """A doc-level term whose snippet mentions a part name must stay doc-level."""
+    pid = _project(auth_client)
+    l1 = _add_bom(auth_client, pid, "Thermal Camera Module")
+    l2 = _add_bom(auth_client, pid, "Thermal Lens Assembly")
+    _upload_quote(
+        auth_client,
+        pid,
+        supplier="ACME",
+        line_no=l1,
+        price=132.0,
+        extra_fields=[
+            {
+                "bom_line_no": l2,
+                "field_type": "unit_price",
+                "value_num": 44.0,
+                "confidence": 0.95,
+                "source_snippet": "L2 44.0",
+            },
+            {
+                "bom_line_no": None,
+                "field_type": "incoterms",
+                "value_text": "EXW",
+                # Snippet mentions a part name — must NOT bucket to line 1 only.
+                "source_snippet": "All items incl. Thermal Camera Module ship EXW",
+                "confidence": 0.9,
+            },
+        ],
+    )
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    suppliers = {s["name"]: s["id"] for s in matrix["suppliers"]}
+    for row in matrix["rows"]:
+        assert row["cells"][suppliers["ACME"]]["incoterms"] == "EXW"
+
+
+def test_terms_only_document_still_creates_quote(auth_client):
+    """An incoterms-only extraction (no price) must still surface in the matrix."""
+    pid = _project(auth_client)
+    _add_bom(auth_client, pid, "Widget A")
+    queue_responses(
+        json.dumps(
+            {
+                "supplier_name": "TermsOnly Co",
+                "currency": "USD",
+                "fields": [
+                    {
+                        "bom_line_no": None,
+                        "field_type": "incoterms",
+                        "value_text": "DDP",
+                        "confidence": 0.9,
+                        "source_snippet": "All prices DDP",
+                    }
+                ],
+            }
+        )
+    )
+    resp = auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("terms.txt", b"All prices DDP", "text/plain"))],
+    )
+    assert resp.status_code == 201
+    assert _drain() >= 1
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    suppliers = {s["name"]: s["id"] for s in matrix["suppliers"]}
+    cell = matrix["rows"][0]["cells"][suppliers["TermsOnly Co"]]
+    assert cell["confidence_state"] == "gap"  # no price -> still a gap
+    assert cell["incoterms"] == "DDP"
+    assert cell["document_id"] is not None  # Open source works from doc-level quote

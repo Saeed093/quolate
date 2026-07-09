@@ -319,6 +319,77 @@ def test_reparse_failed_document(auth_client, monkeypatch):
     assert len(auth_client.get(f"/projects/{pid}/bom").json()) == 1
 
 
+def test_reparse_all_requeues_every_parsed_document(auth_client):
+    from app.llm.mock import queue_responses
+
+    pid = _make_project_with_bom(auth_client)
+
+    def _resp(supplier: str, price: float) -> str:
+        return json.dumps(
+            {
+                "supplier_name": supplier,
+                "currency": "USD",
+                "fields": [
+                    {
+                        "bom_line_no": 1,
+                        "field_type": "unit_price",
+                        "value_num": price,
+                        "confidence": 0.95,
+                        "source_snippet": f"Widget A {price}",
+                    }
+                ],
+            }
+        )
+
+    queue_responses(_resp("ACME", 12.5))
+    auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("a.txt", b"Widget A 12.50 acme", "text/plain"))],
+    )
+    assert _drain() == 1
+    queue_responses(_resp("Globex", 11.0))
+    auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("b.txt", b"Widget A 11.00 globex", "text/plain"))],
+    )
+    assert _drain() == 1
+
+    queue_responses(_resp("ACME", 12.5), _resp("Globex", 11.0))
+    resp = auth_client.post(f"/projects/{pid}/documents/reparse-all")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 2
+    assert all(d["status"] == "pending" for d in body)
+    assert _drain() == 2
+
+    docs = auth_client.get(f"/projects/{pid}/documents").json()
+    assert all(d["status"] in ("parsed", "needs_review") for d in docs)
+
+    # Pressing again while everything is idle re-queues again (no 409s).
+    queue_responses(_resp("ACME", 12.5), _resp("Globex", 11.0))
+    resp2 = auth_client.post(f"/projects/{pid}/documents/reparse-all")
+    assert resp2.status_code == 200
+    assert len(resp2.json()) == 2
+    assert _drain() == 2
+
+
+def test_reparse_all_skips_pending_documents(auth_client):
+    from app.llm.mock import queue_responses
+
+    pid = _make_project_with_bom(auth_client)
+    queue_responses(
+        json.dumps({"supplier_name": "ACME", "currency": "USD", "fields": []})
+    )
+    auth_client.post(
+        f"/projects/{pid}/documents",
+        files=[("files", ("a.txt", b"quote body", "text/plain"))],
+    )
+    # Do NOT drain — the document is still pending.
+    resp = auth_client.post(f"/projects/{pid}/documents/reparse-all")
+    assert resp.status_code == 200
+    assert resp.json() == []  # pending doc skipped, no 409
+
+
 def test_quote_revision_supersedes_previous(auth_client):
     from app.llm.mock import queue_responses
 

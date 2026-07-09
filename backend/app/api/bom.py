@@ -12,6 +12,9 @@ from app.auth.deps import get_current_user
 from app.bom_parser import parse_bom_tsv
 from app.db.models import BomItem, User
 from app.db.session import get_session
+from app.duty.classifier import ClassificationInputError, classify_hs_code
+from app.duty.schemas import HsClassificationOut
+from app.llm.json_enforce import SchemaEnforceError
 from app.schemas import (
     BomItemCreate,
     BomItemOut,
@@ -63,6 +66,7 @@ async def create_bom_item(
         quantity=body.quantity,
         target_price=body.target_price,
         notes=body.notes,
+        hs_code=body.hs_code,
     )
     session.add(item)
     await session.commit()
@@ -101,6 +105,45 @@ async def paste_bom(
     for item in items:
         await session.refresh(item)
     return items
+
+
+@router.post(
+    "/projects/{project_id}/bom/{item_id}/classify-hs",
+    response_model=HsClassificationOut,
+)
+async def classify_bom_hs(
+    project_id: uuid.UUID,
+    item_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> HsClassificationOut:
+    """LLM-suggest HS code candidates for one BOM line.
+
+    Suggestions only — the user applies a candidate via PATCH /bom/{item_id}.
+    """
+    from fastapi import HTTPException
+
+    await get_owned_project(project_id, user, session)
+    result = await session.execute(
+        select(BomItem).where(
+            BomItem.id == item_id, BomItem.project_id == project_id
+        )
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="BOM item not found")
+
+    text = " ".join(
+        part
+        for part in (item.part_name, item.spec_requirement, item.notes)
+        if part
+    )
+    try:
+        return await classify_hs_code(session, text=text, owner_id=user.id)
+    except ClassificationInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SchemaEnforceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.patch("/bom/{item_id}", response_model=BomItemOut)

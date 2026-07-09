@@ -56,8 +56,15 @@ EXTRACTION_SYSTEM = (
     "When the buyer has no BOM yet, populate line_items with every distinct priced "
     "product/service line from the quotation (part_name, spec, qty, unit_price). "
     "Use the same line_no in line_items and in fields.bom_line_no for each row. "
-    "Valid field_type values: unit_price, moq, lead_time_days, currency, incoterms, "
-    "validity_days, payment_terms, warranty, or spec:<name> for a specification. "
+    "CRITICAL: you MUST also emit a fields entry for every commercial term stated "
+    "in the document: moq, lead_time_days, incoterms, payment_terms, warranty, "
+    "validity_days. When a term is stated for one product line, set its "
+    "bom_line_no; when it applies to the whole quotation (incoterms, lead time, "
+    "payment terms usually appear ONCE), emit ONE fields entry with "
+    "bom_line_no=null. For moq set value_num. For lead_time_days convert to days "
+    "and set value_num (e.g. \"4-6 weeks\" -> 35). For incoterms set value_text to "
+    "the code (FOB, CIF, EXW, DDP...). "
+    "Other valid field_type values: currency, or spec:<name> for a specification. "
     "For numeric facts set value_num (a number) and unit where relevant. "
     "Always include a confidence between 0 and 1 and the exact source_snippet "
     "(verbatim text from the document) you relied on. "
@@ -74,16 +81,21 @@ def build_extraction_messages(bom_lines: list[dict], chunk_text: str) -> list[di
             + (f" | qty: {b['quantity']}" if b.get("quantity") is not None else "")
         )
     bom_block = "\n".join(bom_desc_lines) if bom_desc_lines else "(no BOM lines yet)"
+    terms_hint = (
+        "Also emit fields for moq/lead_time_days/incoterms/payment_terms/"
+        "warranty/validity_days — quotation-wide terms get bom_line_no=null."
+    )
     bom_hint = (
         "The buyer has no BOM yet — extract line_items for every priced quotation "
         "row and set bom_line_no on each field to match line_items.line_no. "
         "Every priced row MUST also have a fields entry with field_type=unit_price "
-        "and value_num set."
+        "and value_num set. " + terms_hint
         if not bom_desc_lines
         else (
             "Map each quotation price to the matching BOM line number above. "
             "For every matched line emit a fields entry with field_type=unit_price "
-            "and value_num (number). Also include line_items with the same prices."
+            "and value_num (number). Also include line_items with the same prices. "
+            + terms_hint
         )
     )
 

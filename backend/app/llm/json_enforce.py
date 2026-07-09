@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from typing import Any
 
 from jsonschema import ValidationError, validate
 
@@ -93,8 +95,16 @@ def complete_json(
     max_tokens: int | None = None,
     think: bool = True,
     timeout: float | None = None,
+    normalize: Callable[[Any], Any] | None = None,
 ) -> dict | list:
-    """Call the model, parse+validate JSON, repairing once on failure."""
+    """Call the model, parse+validate JSON, repairing once on failure.
+
+    Args:
+        normalize: Optional callable applied to the parsed value *before*
+            schema validation. Use this to coerce known alternative shapes
+            (e.g. bare arrays) into the expected object form so they pass
+            validation and spare the retry round-trip.
+    """
 
     def _attempt(msgs: list[dict], *, use_think: bool) -> dict | list:
         raw = client.chat(
@@ -107,6 +117,8 @@ def complete_json(
         if not (raw or "").strip():
             raise json.JSONDecodeError("empty model response", raw or "", 0)
         parsed = extract_json(raw)
+        if normalize is not None:
+            parsed = normalize(parsed)
         validate(instance=parsed, schema=schema)
         return parsed
 

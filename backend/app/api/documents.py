@@ -213,6 +213,45 @@ async def reparse_document(
     return document
 
 
+@router.post(
+    "/projects/{project_id}/documents/reparse-all",
+    response_model=list[DocumentOut],
+)
+async def reparse_all_documents(
+    project_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Document]:
+    """Re-run extraction on every document in the project.
+
+    Documents already pending/processing are skipped rather than 409ing so the
+    button is safe to press at any time.
+    """
+    await get_owned_project(project_id, user, session)
+    documents = (
+        (
+            await session.execute(
+                select(Document).where(Document.project_id == project_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    requeued: list[Document] = []
+    for document in documents:
+        if document.status in ("pending", "processing"):
+            continue
+        await _reset_document_for_reparse(session, document)
+        await queue.enqueue(
+            session, "parse_document", {"document_id": str(document.id)}
+        )
+        requeued.append(document)
+    await session.commit()
+    for document in requeued:
+        await session.refresh(document)
+    return requeued
+
+
 @router.get("/documents/{document_id}/pages/{page_no}.png")
 async def get_page_image(
     document_id: uuid.UUID,

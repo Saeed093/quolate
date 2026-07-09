@@ -35,6 +35,7 @@ async def get_matrix(
     duty_pct: float | None = None,
     freight_per_unit: float | None = None,
     lc_pct: float | None = None,
+    fx_rate: float | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -44,6 +45,7 @@ async def get_matrix(
         project,
         currency=currency,
         overrides=_overrides(duty_pct, freight_per_unit, lc_pct),
+        fx_rate=fx_rate,
     )
 
 
@@ -54,6 +56,7 @@ async def export_matrix(
     duty_pct: float | None = None,
     freight_per_unit: float | None = None,
     lc_pct: float | None = None,
+    fx_rate: float | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -63,6 +66,7 @@ async def export_matrix(
         project,
         currency=currency,
         overrides=_overrides(duty_pct, freight_per_unit, lc_pct),
+        fx_rate=fx_rate,
     )
     data = matrix_to_xlsx(matrix)
     filename = f"matrix-{project_id}.xlsx"

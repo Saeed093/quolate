@@ -123,9 +123,11 @@ function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
       <CardContent>
         <form className="flex flex-col gap-3" onSubmit={submit}>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="admin-user">Username</Label>
+            <Label htmlFor="admin-user">Email</Label>
             <Input
               id="admin-user"
+              type="email"
+              placeholder="admin@quolate.com"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="off"
@@ -282,7 +284,7 @@ function AdminDashboard({ onUnauthorized }: { onUnauthorized: () => void }) {
             {loadingActivity ? (
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             ) : activity ? (
-              <ActivityDetail activity={activity} />
+              <ActivityDetail activity={activity} onError={handleError} />
             ) : null}
           </CardContent>
         </Card>
@@ -291,7 +293,13 @@ function AdminDashboard({ onUnauthorized }: { onUnauthorized: () => void }) {
   );
 }
 
-function ActivityDetail({ activity }: { activity: AdminUserActivity }) {
+function ActivityDetail({
+  activity,
+  onError,
+}: {
+  activity: AdminUserActivity;
+  onError: (err: unknown) => void;
+}) {
   return (
     <div className="flex flex-col gap-6">
       {/* Action trail */}
@@ -358,6 +366,7 @@ function ActivityDetail({ activity }: { activity: AdminUserActivity }) {
                   <TableHead>File</TableHead>
                   <TableHead>Where</TableHead>
                   <TableHead>Uploaded</TableHead>
+                  <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -372,6 +381,14 @@ function ActivityDetail({ activity }: { activity: AdminUserActivity }) {
                     <TableCell className="whitespace-nowrap text-xs">
                       {fmt(d.created_at)}
                     </TableCell>
+                    <TableCell className="text-right">
+                      <DownloadDocButton
+                        docId={d.id}
+                        kind="library"
+                        filename={d.filename}
+                        onError={onError}
+                      />
+                    </TableCell>
                   </TableRow>
                 ))}
                 {activity.documents.map((d) => (
@@ -385,13 +402,21 @@ function ActivityDetail({ activity }: { activity: AdminUserActivity }) {
                     <TableCell className="whitespace-nowrap text-xs">
                       {fmt(d.created_at)}
                     </TableCell>
+                    <TableCell className="text-right">
+                      <DownloadDocButton
+                        docId={d.id}
+                        kind="project"
+                        filename={d.filename}
+                        onError={onError}
+                      />
+                    </TableCell>
                   </TableRow>
                 ))}
                 {activity.documents.length === 0 &&
                   activity.library_documents.length === 0 && (
                     <TableRow>
                       <TableCell
-                        colSpan={3}
+                        colSpan={4}
                         className="text-xs text-muted-foreground"
                       >
                         No documents uploaded.
@@ -446,5 +471,47 @@ function ActivityDetail({ activity }: { activity: AdminUserActivity }) {
         )}
       </section>
     </div>
+  );
+}
+
+function DownloadDocButton({
+  docId,
+  kind,
+  filename,
+  onError,
+}: {
+  docId: string;
+  kind: "project" | "library";
+  filename: string;
+  onError: (err: unknown) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function download() {
+    setBusy(true);
+    try {
+      await adminApi.downloadDocument(docId, kind, filename);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 w-7 p-0"
+      title={`Download ${filename}`}
+      disabled={busy}
+      onClick={() => void download()}
+    >
+      {busy ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Download className="h-3.5 w-3.5" />
+      )}
+    </Button>
   );
 }

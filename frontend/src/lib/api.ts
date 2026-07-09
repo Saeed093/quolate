@@ -119,6 +119,7 @@ export interface BomItem {
   quantity: string | null;
   target_price: string | null;
   notes: string | null;
+  hs_code: string | null;
 }
 
 export interface Supplier {
@@ -171,12 +172,28 @@ export interface DocumentReview {
 
 export type CellState = "ok" | "verify" | "gap";
 
+export interface DutyBreakdown {
+  fx_rate: number;
+  assessed_value_pkr: number;
+  total_duty_tax_pkr: number;
+  levies: {
+    levy_type: string;
+    label: string;
+    rate: number;
+    amount_pkr: number;
+  }[];
+}
+
 export interface MatrixCell {
   supplier_id: string;
   quote_id: string | null;
   document_id: string | null;
   fob: number | null;
   landed: number | null;
+  hs_code: string | null;
+  duty: number | null;
+  duty_source: "statutory" | "flat" | null;
+  duty_breakdown: DutyBreakdown | null;
   currency: string;
   moq: number | null;
   lead_time_days: number | null;
@@ -198,6 +215,7 @@ export interface MatrixRow {
   spec_requirement: string | null;
   quantity: number | null;
   target_price: number | null;
+  hs_code: string | null;
   best_supplier_id: string | null;
   spread_pct: number | null;
   cells: Record<string, MatrixCell>;
@@ -211,6 +229,9 @@ export interface Matrix {
     freight_per_unit: number;
     lc_pct: number;
     fx_overrides: Record<string, number>;
+    fx_rate_pkr_usd: number | null;
+    fx_rate_source: "override" | "live" | "static" | null;
+    duty_as_of: string | null;
   };
   suppliers: { id: string; name: string; country: string | null }[];
   rows: MatrixRow[];
@@ -230,6 +251,7 @@ export interface MatrixParams {
   duty_pct?: number;
   freight_per_unit?: number;
   lc_pct?: number;
+  fx_rate?: number;
 }
 
 export interface ChatMessage {
@@ -773,6 +795,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, has_header: hasHeader ?? null }),
     }),
+  classifyBomHs: (pid: string, itemId: string) =>
+    request<HsClassificationResult>(
+      `/projects/${pid}/bom/${itemId}/classify-hs`,
+      { method: "POST" },
+    ),
   updateBom: (itemId: string, patch: Partial<BomItem>) =>
     request<BomItem>(`/bom/${itemId}`, {
       method: "PATCH",
@@ -808,6 +835,10 @@ export const api = {
     request<DocumentReview>(`/documents/${docId}/review`),
   reparseDocument: (docId: string) =>
     request<Document>(`/documents/${docId}/reparse`, { method: "POST" }),
+  reparseAllDocuments: (pid: string) =>
+    request<Document[]>(`/projects/${pid}/documents/reparse-all`, {
+      method: "POST",
+    }),
   markReviewed: (docId: string) =>
     request<Document>(`/documents/${docId}/mark-reviewed`, { method: "POST" }),
   pageImageUrl: (docId: string, page: number) =>
@@ -1123,18 +1154,28 @@ export const adminApi = {
   users: () => adminRequest<AdminUserSummary[]>("/admin/users"),
   userActivity: (userId: string) =>
     adminRequest<AdminUserActivity>(`/admin/users/${userId}/activity`),
-  downloadActivityCsv: async (userId: string, email: string) => {
-    const token = getAdminToken();
-    const res = await fetch(`${BASE_URL}/admin/users/${userId}/activity.csv`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) throw new ApiError(res.status, "Could not download CSV");
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `activity-${email}.csv`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  },
+  downloadActivityCsv: (userId: string, email: string) =>
+    adminDownload(`/admin/users/${userId}/activity.csv`, `activity-${email}.csv`),
+  downloadDocument: (docId: string, kind: "project" | "library", filename: string) =>
+    adminDownload(
+      kind === "library"
+        ? `/admin/library-documents/${docId}/file`
+        : `/admin/documents/${docId}/file`,
+      filename,
+    ),
 };
+
+async function adminDownload(path: string, filename: string) {
+  const token = getAdminToken();
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Could not download ${filename}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}

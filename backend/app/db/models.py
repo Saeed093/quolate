@@ -68,6 +68,8 @@ class BomItem(UUIDPKMixin, TimestampMixin, Base):
     quantity: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     target_price: Mapped[float | None] = mapped_column(Numeric, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pakistan PCT/HS code for statutory duty in the comparison matrix.
+    hs_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class Supplier(UUIDPKMixin, TimestampMixin, Base):

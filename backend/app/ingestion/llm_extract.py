@@ -24,6 +24,23 @@ def _chunk_text(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
+def _normalize_extraction(parsed: object) -> object:
+    """Coerce the model's response into the expected object shape.
+
+    Some models (especially smaller local ones) occasionally return a bare
+    array of line-item dicts or field dicts instead of the full wrapper object.
+    Wrapping it here keeps the schema validator happy and avoids wasting a
+    full repair round-trip for a trivially fixable response.
+    """
+    if not isinstance(parsed, list):
+        return parsed
+    # Heuristic: if items look like line-items (have part_name), treat them
+    # as line_items; otherwise treat them as fields.
+    if parsed and isinstance(parsed[0], dict) and "part_name" in parsed[0]:
+        return {"line_items": parsed, "fields": []}
+    return {"line_items": [], "fields": parsed}
+
+
 def extract_fields(bom_lines: list[dict], full_text: str) -> dict:
     """Return {'supplier_name', 'currency', 'fields': [...]} merged across chunks."""
     client = get_llm_client()
@@ -45,6 +62,7 @@ def extract_fields(bom_lines: list[dict], full_text: str) -> dict:
             EXTRACTION_SCHEMA,
             think=not settings.llm_disable_thinking_for_fast_calls,
             timeout=settings.llm_fast_timeout_seconds,
+            normalize=_normalize_extraction,
         )
         if isinstance(result, list):
             result = {"fields": result}

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     jwt_expire_hours: int = 24
 
     # Admin console (compliance). Override in .env for production.
-    admin_username: str = "admin"
+    admin_username: str = "admin@quolate.com"
     admin_password: str = "admin1963"
     admin_token_expire_hours: int = 8
 

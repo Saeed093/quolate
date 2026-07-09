@@ -8,6 +8,7 @@ audit_events trail plus the stored artifacts themselves.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import uuid
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -32,6 +33,7 @@ from app.db.models import (
     User,
 )
 from app.db.session import get_session
+from app.storage import storage
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -308,3 +310,45 @@ async def admin_user_activity_csv(
             "Content-Disposition": f'attachment; filename="activity-{email}.csv"'
         },
     )
+
+
+def _file_response(filename: str, mime_type: str | None, data: bytes) -> Response:
+    return Response(
+        content=data,
+        media_type=mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/documents/{doc_id}/file", dependencies=[Depends(require_admin)])
+async def admin_download_document(
+    doc_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> Response:
+    """Download a user's original uploaded project document (compliance copy)."""
+    doc = (
+        await session.execute(select(Document).where(Document.id == doc_id))
+    ).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not await asyncio.to_thread(storage.exists, doc.storage_key):
+        raise HTTPException(status_code=404, detail="Stored file is missing")
+    data = await asyncio.to_thread(storage.get, doc.storage_key)
+    return _file_response(doc.original_filename, doc.mime_type, data)
+
+
+@router.get("/library-documents/{doc_id}/file", dependencies=[Depends(require_admin)])
+async def admin_download_library_document(
+    doc_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> Response:
+    """Download a user's original uploaded library document (compliance copy)."""
+    doc = (
+        await session.execute(
+            select(LibraryDocument).where(LibraryDocument.id == doc_id)
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not await asyncio.to_thread(storage.exists, doc.storage_key):
+        raise HTTPException(status_code=404, detail="Stored file is missing")
+    data = await asyncio.to_thread(storage.get, doc.storage_key)
+    return _file_response(doc.original_filename, doc.mime_type, data)

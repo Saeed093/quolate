@@ -69,6 +69,22 @@ export function InboxTab({
       toast({ title: "Could not re-parse", variant: "destructive" }),
   });
 
+  const reparseAll = useMutation({
+    mutationFn: () => api.reparseAllDocuments(projectId),
+    onSuccess: (requeued) => {
+      qc.invalidateQueries({ queryKey: ["documents", projectId] });
+      qc.invalidateQueries({ queryKey: ["activity"] });
+      qc.invalidateQueries({ queryKey: ["matrix", projectId] });
+      toast({
+        title: requeued.length
+          ? `Re-extracting ${requeued.length} document(s)…`
+          : "No documents to re-extract",
+      });
+    },
+    onError: () =>
+      toast({ title: "Could not re-extract documents", variant: "destructive" }),
+  });
+
   const upload = useMutation({
     mutationFn: ({ files, kind }: { files: File[]; kind?: string }) => {
       startUpload(uploadId, `Uploading ${files.length} file(s)…`);
@@ -216,7 +232,25 @@ export function InboxTab({
         </p>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {(docs.data?.length ?? 0) > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={
+              reparseAll.isPending ||
+              docs.data?.some((d) =>
+                ["pending", "processing"].includes(d.status),
+              )
+            }
+            onClick={() => reparseAll.mutate()}
+            title="Re-run extraction on every document (picks up prices, MOQ, lead time and incoterms)"
+          >
+            <RotateCcw className="h-4 w-4" />
+            Re-extract all
+          </Button>
+        )}
         <Button
           size="sm"
           variant="outline"
