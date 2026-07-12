@@ -10,6 +10,7 @@ import { MatrixPane } from "@/components/workbench/MatrixPane";
 import { AssumptionsStrip } from "@/components/workbench/AssumptionsStrip";
 import { BomTab } from "@/components/workbench/BomTab";
 import { InboxTab } from "@/components/workbench/InboxTab";
+import { QuoteTab } from "@/components/workbench/QuoteTab";
 import { useChat } from "@/contexts/ChatContext";
 import { DeleteProjectButton } from "@/components/DeleteProjectButton";
 
@@ -105,6 +106,9 @@ export default function WorkbenchPage() {
               <TabsTrigger value="matrix" className="flex-1 sm:flex-none">
                 Matrix
               </TabsTrigger>
+              <TabsTrigger value="quote" className="flex-1 sm:flex-none">
+                Quote
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -127,6 +131,10 @@ export default function WorkbenchPage() {
               params={params}
               onOpenSource={openSource}
             />
+          </TabsContent>
+
+          <TabsContent value="quote" className="mt-4">
+            <QuoteTab projectId={id} onGoToBom={() => setTab("bom")} />
           </TabsContent>
         </Tabs>
       </main>

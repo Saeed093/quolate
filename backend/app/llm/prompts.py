@@ -117,6 +117,59 @@ def build_extraction_messages(bom_lines: list[dict], chunk_text: str) -> list[di
     ]
 
 
+# ---- Sell-side quotation: requirement (RFP demand) extraction ----
+# Distinct from EXTRACTION_* above: here the text is a CUSTOMER inquiry/RFP
+# (often an informal message, chat screenshot OCR, or a letter), and we extract
+# WHAT THE CUSTOMER WANTS TO BUY (demand lines), not supplier prices.
+REQUIREMENTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "line_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "part_name": {"type": "string"},
+                    "spec_requirement": {"type": ["string", "null"]},
+                    "quantity": {"type": ["number", "null"]},
+                    "notes": {"type": ["string", "null"]},
+                },
+                "required": ["part_name"],
+                "additionalProperties": True,
+            },
+        },
+    },
+    "required": ["line_items"],
+    "additionalProperties": True,
+}
+
+REQUIREMENTS_SYSTEM = (
+    "You read a customer's purchase inquiry, RFP, or request (which may be an "
+    "informal chat message, an email, or OCR'd text from a photo) and extract "
+    "the list of DISTINCT items the customer wants to buy. For each item emit "
+    "part_name (the product/service), spec_requirement (any stated specs, model, "
+    "grade, size — else null), quantity (a number if stated, else null), and "
+    "notes (delivery location, deadline, or other context — else null). "
+    "Extract only what the customer is asking for; ignore greetings, signatures, "
+    "and boilerplate. Do NOT invent quantities or specs that are not stated. "
+    "Return ONLY JSON matching the schema."
+)
+
+
+def build_requirements_messages(text: str) -> list[dict]:
+    user = (
+        "Customer inquiry / RFP text:\n"
+        f'"""\n{text}\n"""\n\n'
+        'Return JSON: {"line_items": [{"part_name": str, '
+        '"spec_requirement": str|null, "quantity": number|null, '
+        '"notes": str|null}]}'
+    )
+    return [
+        {"role": "system", "content": REQUIREMENTS_SYSTEM},
+        {"role": "user", "content": user},
+    ]
+
+
 # Amounts are extracted as VERBATIM STRINGS, not numbers: suppliers mix
 # decimal/thousands conventions ("$27.500" meaning 27.50, "8,770.000" meaning
 # 8770.00) and an LLM asked to emit plain numbers silently drops or misreads

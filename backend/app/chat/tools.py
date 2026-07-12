@@ -5,6 +5,9 @@ tool result (enforced in loop.py). Tools are the only way to read/change state.
 """
 from __future__ import annotations
 
+import ast
+import math
+import operator
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -382,6 +385,129 @@ async def _tool_classify_hs_code(ctx: ChatContext, product_description: str) -> 
     }
 
 
+async def _tool_generate_quotation(
+    ctx: ChatContext, title: str | None = None
+) -> dict:
+    """Create a sell-side quotation draft from the project's current BOM."""
+    from app.db.models import QuotationVersion
+    from app.quotations.assemble import create_quotation
+
+    quotation = await create_quotation(ctx.session, ctx.project, title=title)
+    await ctx.session.commit()
+    version = (
+        await ctx.session.execute(
+            select(QuotationVersion).where(
+                QuotationVersion.quotation_id == quotation.id
+            )
+        )
+    ).scalar_one()
+    gaps = [line.line_no for line in version.lines if line.gap_flag]
+    return {
+        "quote_no": quotation.quote_no,
+        "quotation_id": str(quotation.id),
+        "version_id": str(version.id),
+        "currency": version.currency,
+        "line_count": len(version.lines),
+        "gap_line_nos": gaps,
+        "subtotal": float(version.subtotal) if version.subtotal is not None else None,
+        "tax_total": float(version.tax_total) if version.tax_total is not None else None,
+        "grand_total": (
+            float(version.grand_total) if version.grand_total is not None else None
+        ),
+        "lines": [
+            {
+                "line_no": line.line_no,
+                "description": line.description,
+                "quantity": float(line.qty) if line.qty is not None else None,
+                "unit_price": (
+                    float(line.unit_price) if line.unit_price is not None else None
+                ),
+                "line_total": (
+                    float(line.line_total) if line.line_total is not None else None
+                ),
+                "gap": bool(line.gap_flag),
+            }
+            for line in version.lines
+        ],
+        "note": (
+            "Draft created in the Quote tab. Lines flagged as gaps have no supplier "
+            "cost — the user must set a price or remove them before sending."
+            if gaps
+            else "Draft created in the Quote tab; review and download it there."
+        ),
+    }
+
+
+_CALC_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+
+_CALC_FUNCS = {
+    "sum": lambda args: sum(args),
+    "avg": lambda args: sum(args) / len(args),
+    "min": lambda args: min(args),
+    "max": lambda args: max(args),
+    "abs": lambda args: abs(args[0]),
+    "round": lambda args: round(args[0], int(args[1])) if len(args) == 2 else round(args[0]),
+}
+
+
+def _calc_eval(node: ast.AST) -> float:
+    """Evaluate a parsed arithmetic expression. Numbers and whitelisted ops only."""
+    if isinstance(node, ast.Expression):
+        return _calc_eval(node.body)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return float(node.value)
+        raise ValueError("only numbers are allowed")
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _calc_eval(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp) and type(node.op) in _CALC_BINOPS:
+        left, right = _calc_eval(node.left), _calc_eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 12:
+            raise ValueError("exponent too large")
+        return _CALC_BINOPS[type(node.op)](left, right)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _CALC_FUNCS
+        and not node.keywords
+    ):
+        args: list[float] = []
+        for arg in node.args:
+            if isinstance(arg, (ast.List, ast.Tuple)):
+                args.extend(_calc_eval(element) for element in arg.elts)
+            else:
+                args.append(_calc_eval(arg))
+        if not args:
+            raise ValueError(f"{node.func.id}() needs at least one number")
+        return float(_CALC_FUNCS[node.func.id](args))
+    raise ValueError("unsupported expression; use numbers, + - * / % **, sum/avg/min/max/abs/round")
+
+
+async def _tool_calculate(ctx: ChatContext, expression: str = "") -> dict:
+    expr = (expression or "").strip()
+    if not expr:
+        return {"error": "expression is required, e.g. '5 * 100.0'"}
+    if len(expr) > 300:
+        return {"error": "expression too long (max 300 chars)"}
+    try:
+        value = _calc_eval(ast.parse(expr, mode="eval"))
+    except ZeroDivisionError:
+        return {"error": "division by zero"}
+    except (ValueError, SyntaxError) as exc:
+        return {"error": f"invalid expression: {exc}"}
+    if not math.isfinite(value):
+        return {"error": "result is not a finite number"}
+    return {"expression": expr, "result": round(value, 6)}
+
+
 # ---------- Registry ----------
 # Tools that only make sense inside a project workbench (need ctx.project).
 _PROJECT_TOOLS = {
@@ -390,6 +516,7 @@ _PROJECT_TOOLS = {
     "list_documents",
     "get_document_fields",
     "draft_supplier_email",
+    "generate_quotation",
 }
 
 
@@ -457,6 +584,26 @@ def build_registry(include_project_tools: bool = True) -> dict[str, Tool]:
                     "required": ["query"],
                 },
                 _tool_search_knowledge,
+            ),
+            Tool(
+                "calculate",
+                "Evaluate an arithmetic expression and return the exact result. "
+                "Use this for ANY math on figures from other tools (totals, "
+                "averages, differences, percentages, conversions) instead of "
+                "computing in your head. Supports + - * / % **, parentheses and "
+                "sum(), avg(), min(), max(), abs(), round(). Numbers only, no "
+                "variables. Example: sum(100.0, 250.5) * 1.18",
+                {
+                    "type": "object",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "description": "e.g. '5 * 100.0' or 'avg(10, 20, 30)'",
+                        }
+                    },
+                    "required": ["expression"],
+                },
+                _tool_calculate,
             ),
             Tool(
                 "web_search",
@@ -570,6 +717,25 @@ def build_registry(include_project_tools: bool = True) -> dict[str, Tool]:
                     "required": ["product_description"],
                 },
                 _tool_classify_hs_code,
+            ),
+            Tool(
+                "generate_quotation",
+                "Create a sell-side quotation DRAFT for this project from its "
+                "current BOM: prices each line from the cheapest supplier landed "
+                "cost plus the project margin, applies GST if configured, and "
+                "flags lines with no cost as gaps. Returns the quote number and "
+                "totals; the user reviews, edits and downloads it (client DOCX + "
+                "internal XLSX) in the Quote tab.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Optional quotation title/subject.",
+                        },
+                    },
+                },
+                _tool_generate_quotation,
             ),
         ]
     }

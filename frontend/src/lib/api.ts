@@ -102,12 +102,99 @@ export interface User {
   display_name: string | null;
 }
 
+export interface QuotationTerms {
+  validity_days?: number | null;
+  payment_terms?: string | null;
+  delivery?: string | null;
+  warranty?: string | null;
+  notes?: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
   status: string;
   base_currency: string;
   landed_cost_defaults: Record<string, unknown>;
+  // Sell-side quotation defaults (fractions; e.g. margin_pct "0.15" == 15%).
+  margin_pct?: string;
+  gst_enabled?: boolean;
+  gst_pct?: string;
+  terms?: QuotationTerms;
+}
+
+export type QuotationSourceKind = "text" | "document" | "library" | "tender";
+
+export interface QuotationSourceRef {
+  kind: QuotationSourceKind;
+  id?: string;
+  text?: string;
+}
+
+export interface QuotationLine {
+  id: string;
+  version_id: string;
+  line_no: number;
+  description: string;
+  spec: string | null;
+  qty: string | null;
+  unit_cost: string | null;
+  cost_source: string | null;
+  unit_price: string | null;
+  line_total: string | null;
+  gap_flag: boolean;
+}
+
+export interface QuotationVersion {
+  id: string;
+  quotation_id: string;
+  version_no: number;
+  status: "draft" | "final";
+  currency: string;
+  margin_pct: string;
+  gst_enabled: boolean;
+  gst_pct: string;
+  validity_days: number | null;
+  terms_snapshot: QuotationTerms;
+  subtotal: string | null;
+  tax_total: string | null;
+  grand_total: string | null;
+  docx_key: string | null;
+  xlsx_key: string | null;
+  created_at: string;
+  lines: QuotationLine[];
+}
+
+export interface Quotation {
+  id: string;
+  project_id: string;
+  quote_no: string;
+  seq: number;
+  title: string | null;
+  status: "draft" | "final";
+  created_at: string;
+  versions: QuotationVersion[];
+}
+
+export interface QuotationLineInput {
+  id?: string;
+  line_no?: number;
+  description?: string;
+  spec?: string | null;
+  qty?: string | number | null;
+  unit_cost?: string | number | null;
+  unit_price?: string | number | null;
+  cost_source?: string | null;
+  remove?: boolean;
+}
+
+export interface QuotationVersionUpdate {
+  margin_pct?: string | number;
+  gst_enabled?: boolean;
+  gst_pct?: string | number;
+  validity_days?: number | null;
+  terms?: QuotationTerms;
+  lines?: QuotationLineInput[];
 }
 
 export interface BomItem {
@@ -807,6 +894,62 @@ export const api = {
     }),
   deleteBom: (itemId: string) =>
     request<void>(`/bom/${itemId}`, { method: "DELETE" }),
+
+  // Quotations (sell-side)
+  extractRequirements: (pid: string, sources: QuotationSourceRef[]) =>
+    request<BomItem[]>(`/projects/${pid}/quotations/extract-requirements`, {
+      method: "POST",
+      body: JSON.stringify({ sources }),
+    }),
+  createQuotation: (pid: string, title?: string) =>
+    request<Quotation>(`/projects/${pid}/quotations`, {
+      method: "POST",
+      body: JSON.stringify({ title: title ?? null, sources: [] }),
+    }),
+  listQuotations: (pid: string) =>
+    request<Quotation[]>(`/projects/${pid}/quotations`),
+  getQuotation: (pid: string, qid: string) =>
+    request<Quotation>(`/projects/${pid}/quotations/${qid}`),
+  updateQuotationVersion: (
+    pid: string,
+    versionId: string,
+    patch: QuotationVersionUpdate,
+  ) =>
+    request<QuotationVersion>(
+      `/projects/${pid}/quotations/versions/${versionId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  regenerateQuotationVersion: (pid: string, versionId: string) =>
+    request<QuotationVersion>(
+      `/projects/${pid}/quotations/versions/${versionId}/regenerate`,
+      { method: "POST" },
+    ),
+  finalizeQuotationVersion: (pid: string, versionId: string) =>
+    request<QuotationVersion>(
+      `/projects/${pid}/quotations/versions/${versionId}/finalize`,
+      { method: "POST" },
+    ),
+  // Auth'd blob download (a plain <a href> can't carry the Bearer token).
+  downloadQuotationFile: async (
+    pid: string,
+    versionId: string,
+    fmt: "docx" | "xlsx",
+    filename: string,
+  ) => {
+    const token = getToken();
+    const res = await fetch(
+      apiUrl(`/projects/${pid}/quotations/versions/${versionId}/download?fmt=${fmt}`),
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    if (!res.ok) throw new ApiError(res.status, "Could not generate file");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  },
 
   // Suppliers
   listSuppliers: (pid: string) =>

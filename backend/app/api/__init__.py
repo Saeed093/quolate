@@ -12,6 +12,7 @@ log = logging.getLogger("quolate.api")
 _ROUTER_MODULES = [
     "app.api.auth",
     "app.api.projects",
+    "app.api.quotations",
     "app.api.suppliers",
     "app.api.bom",
     "app.api.documents",

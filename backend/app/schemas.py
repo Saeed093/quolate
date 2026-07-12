@@ -47,6 +47,11 @@ class ProjectUpdate(BaseModel):
     status: str | None = None
     base_currency: str | None = None
     landed_cost_defaults: dict | None = None
+    # Sell-side quotation defaults (fractions; terms is a free-form dict).
+    margin_pct: Decimal | None = None
+    gst_enabled: bool | None = None
+    gst_pct: Decimal | None = None
+    terms: dict | None = None
 
 
 class ProjectOut(ORMModel):
@@ -55,6 +60,10 @@ class ProjectOut(ORMModel):
     status: str
     base_currency: str
     landed_cost_defaults: dict
+    margin_pct: Decimal
+    gst_enabled: bool
+    gst_pct: Decimal
+    terms: dict
     created_at: datetime
 
 
@@ -120,6 +129,89 @@ class BomPasteRequest(BaseModel):
 
     text: str
     has_header: bool | None = None
+
+
+# ---- Quotations (sell-side) ----
+class QuotationSourceRef(BaseModel):
+    """One RFP/requirement source to extract line items from."""
+
+    # "document" (project doc), "library" (My Documents), "tender", or "text".
+    kind: str
+    id: uuid.UUID | None = None
+    text: str | None = None
+
+
+class QuotationCreate(BaseModel):
+    title: str | None = None
+    sources: list[QuotationSourceRef] = Field(default_factory=list)
+
+
+class QuotationLineInput(BaseModel):
+    """Edit/resolve a line at review. `remove=True` deletes it (gap resolution)."""
+
+    id: uuid.UUID | None = None
+    line_no: int | None = None
+    description: str | None = None
+    spec: str | None = None
+    qty: Decimal | None = None
+    unit_cost: Decimal | None = None
+    unit_price: Decimal | None = None
+    cost_source: str | None = None
+    remove: bool = False
+
+
+class QuotationVersionUpdate(BaseModel):
+    margin_pct: Decimal | None = None
+    gst_enabled: bool | None = None
+    gst_pct: Decimal | None = None
+    validity_days: int | None = None
+    terms: dict | None = None
+    lines: list[QuotationLineInput] | None = None
+
+
+class QuotationLineOut(ORMModel):
+    id: uuid.UUID
+    version_id: uuid.UUID
+    line_no: int
+    description: str
+    spec: str | None
+    qty: Decimal | None
+    unit_cost: Decimal | None
+    cost_source: str | None
+    unit_price: Decimal | None
+    line_total: Decimal | None
+    gap_flag: bool
+
+
+class QuotationVersionOut(ORMModel):
+    id: uuid.UUID
+    quotation_id: uuid.UUID
+    version_no: int
+    status: str
+    currency: str
+    margin_pct: Decimal
+    gst_enabled: bool
+    gst_pct: Decimal
+    validity_days: int | None
+    terms_snapshot: dict
+    subtotal: Decimal | None
+    tax_total: Decimal | None
+    grand_total: Decimal | None
+    docx_key: str | None
+    xlsx_key: str | None
+    created_at: datetime
+    lines: list[QuotationLineOut] = Field(default_factory=list)
+
+
+class QuotationOut(ORMModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    quote_no: str
+    seq: int
+    title: str | None
+    status: str
+    created_at: datetime
+    versions: list[QuotationVersionOut] = Field(default_factory=list)
 
 
 # ---- Documents ----

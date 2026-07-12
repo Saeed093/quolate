@@ -52,6 +52,13 @@ class Project(UUIDPKMixin, TimestampMixin, Base):
     landed_cost_defaults: Mapped[dict] = mapped_column(
         JSONB, default=dict, nullable=False
     )
+    # Sell-side quotation defaults (see app.quotations). Margin/GST are fractions
+    # (0.15 == 15%); terms holds {validity_days, payment_terms, delivery,
+    # warranty, notes}, snapshotted into each quotation version at generation.
+    margin_pct: Mapped[float] = mapped_column(Numeric, default=0, nullable=False)
+    gst_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    gst_pct: Mapped[float] = mapped_column(Numeric, default=0, nullable=False)
+    terms: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
 
 class BomItem(UUIDPKMixin, TimestampMixin, Base):
@@ -177,6 +184,93 @@ class Quote(UUIDPKMixin, TimestampMixin, Base):
         ForeignKey("quotes.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+
+class Quotation(UUIDPKMixin, TimestampMixin, Base):
+    """Sell-side quotation: the customer-facing priced document (distinct from
+    the supplier-side ``Quote`` above, which is cost TO the user). One row is a
+    stable identity; its priced content lives in ``QuotationVersion`` rows."""
+
+    __tablename__ = "quotations"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "quote_no", name="uq_quotations_project_quote_no"
+        ),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # e.g. "acme-rfp-QUO-0001"; unique per project. `seq` is the raw counter.
+    quote_no: Mapped[str] = mapped_column(String, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft", nullable=False)
+
+    versions: Mapped[list["QuotationVersion"]] = relationship(
+        "QuotationVersion",
+        order_by="QuotationVersion.version_no",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class QuotationVersion(UUIDPKMixin, TimestampMixin, Base):
+    """One immutable-once-final revision of a quotation. Regenerating creates a
+    new version; every version keeps its own rendered files (Claude-style
+    history). Margin/GST fractions and terms are snapshotted here at build."""
+
+    __tablename__ = "quotation_versions"
+
+    quotation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="draft", nullable=False)
+    currency: Mapped[str] = mapped_column(String, default="USD", nullable=False)
+    margin_pct: Mapped[float] = mapped_column(Numeric, default=0, nullable=False)
+    gst_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    gst_pct: Mapped[float] = mapped_column(Numeric, default=0, nullable=False)
+    validity_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    terms_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    subtotal: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    tax_total: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    grand_total: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    # Storage keys for the generated files (nullable until rendered).
+    docx_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    xlsx_key: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    lines: Mapped[list["QuotationLine"]] = relationship(
+        "QuotationLine",
+        order_by="QuotationLine.line_no",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class QuotationLine(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "quotation_lines"
+
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotation_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[str | None] = mapped_column(Text, nullable=True)
+    qty: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    unit_cost: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    # Provenance of the cost: "supplier_doc:{id}" | "matched_quote:{id}" | "manual".
+    cost_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    unit_price: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    line_total: Mapped[float | None] = mapped_column(Numeric, nullable=True)
+    # True when no cost source covered the line (user must price or remove it).
+    gap_flag: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class ChatMessage(UUIDPKMixin, TimestampMixin, Base):

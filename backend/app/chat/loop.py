@@ -11,7 +11,11 @@ tool-calling (spec section 5).
 Hard rules enforced here:
   - max 6 iterations
   - any number in the final answer must come from a tool result or the user's
-    own message; otherwise the answer is regenerated once.
+    own message, or be one arithmetic step away from such numbers (sum,
+    difference, product, ratio or percentage of two source figures — covers
+    totals, deltas and markups). Anything else is regenerated once; the
+    reminder steers the model to the `calculate` tool, whose results count as
+    tool results and therefore pass the guard.
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from app.chat.tools import ChatContext, Tool, build_registry
+from app.chat.tools import ChatContext, Tool, _tool_get_matrix, build_registry
 from app.config import settings
 from app.llm.client import LLMClient, get_llm_client
 from app.llm.json_enforce import extract_json
@@ -43,14 +47,17 @@ _SYSTEM_TEMPLATE = (
     "3. To give your final answer: {{\"final\": \"<your message to the user>\"}}.\n"
     "4. NEVER state any price, cost, quantity or other number unless it appeared "
     "in a tool result during this conversation. If you need a number, call a tool "
-    "first.\n"
+    "first. For any question about prices or suppliers, call get_matrix first. "
+    "Do arithmetic with the calculate tool, never in your head.\n"
     "Available tools:\n{tools}"
 )
 
 _NUMBERS_REMINDER = (
     "Your last answer contained a number that did not come from any tool result. "
-    "Either call a tool to obtain the figure, or answer without stating unverified "
-    "numbers. Respond with one JSON object."
+    "Use the calculate tool to compute it from verified figures, e.g. "
+    '{"action": "calculate", "args": {"expression": "5 * 100.0"}}, or call '
+    "get_matrix for pricing data. Then answer using only verified numbers. "
+    "Respond with one JSON object."
 )
 
 _PROTOCOL_REMINDER = (
@@ -100,13 +107,100 @@ class ReActDriver:
         return Step(kind="unparseable", text=cleaned, raw=raw)
 
 
+def _normalize_num(token: str) -> set[str]:
+    """Return a set of equivalent string representations of a number token.
+
+    Handles float precision differences: "145.00" and "145.0" and "145" are all
+    equivalent and should match any of each other in the allowed string.
+    """
+    candidates = {token}
+    try:
+        f = float(token)
+        candidates.add(str(f))           # "145.0"
+        candidates.add(str(int(f)) if f == int(f) else str(f))  # "145" when whole
+        # Common 2-decimal representation
+        candidates.add(f"{f:.2f}")       # "145.00"
+        candidates.add(f"{f:.1f}")       # "145.0"
+    except (ValueError, OverflowError):
+        pass
+    return candidates
+
+
+# Guard against O(n^2) blowup when tool results contain very many numbers.
+_MAX_SOURCE_NUMBERS = 150
+
+
+def _source_numbers(allowed_norm: str) -> list[float]:
+    values: set[float] = set()
+    for m in _NUMBER_RE.findall(allowed_norm):
+        token = m.rstrip(".")
+        try:
+            values.add(float(token))
+        except ValueError:
+            continue
+        if len(values) >= _MAX_SOURCE_NUMBERS:
+            break
+    return list(values)
+
+
+def _derived_values(allowed_norm: str) -> set[float]:
+    """All values one arithmetic step away from any pair of source numbers.
+
+    Covers the sums, differences, products, ratios and percentage forms a model
+    legitimately derives from tool data (5 units x 100.0 = 500, 10% markup,
+    price deltas) without letting arbitrary hallucinated figures through.
+    """
+    src = _source_numbers(allowed_norm)
+    out: set[float] = set(src)
+    for i, a in enumerate(src):
+        for b in src[i:]:
+            out.add(a + b)
+            out.add(a - b)
+            out.add(b - a)
+            out.add(a * b)
+            if b:
+                out.add(a / b)
+            if a:
+                out.add(b / a)
+            # Percentage forms: b% of a, a plus/minus b% (and vice versa).
+            out.add(a * b / 100.0)
+            out.add(a * (1 + b / 100.0))
+            out.add(a * (1 - b / 100.0))
+            out.add(b * (1 + a / 100.0))
+            out.add(b * (1 - a / 100.0))
+    return out
+
+
+def _matches_derived(token: str, derived: set[float]) -> bool:
+    """Match at the precision the answer displayed: "500" matches 500.0004."""
+    try:
+        x = float(token)
+    except ValueError:
+        return False
+    decimals = len(token.split(".")[1]) if "." in token else 0
+    target = round(x, decimals)
+    return any(round(v, decimals) == target for v in derived)
+
+
 def _numbers_sourced(text: str, allowed: str) -> bool:
+    """Return True if every number in *text* is sourced from *allowed*.
+
+    A number is sourced when it appears verbatim in the allowed corpus (with
+    float-normalised matching so "145.00" matches "145.0"), or is one
+    arithmetic step away from two source numbers (see _derived_values).
+    """
     allowed_norm = allowed.replace(",", "")
+    derived: set[float] | None = None  # computed lazily on first miss
     for m in _NUMBER_RE.findall(text or ""):
         token = m.replace(",", "").rstrip(".")
         if not token or token == ".":
             continue
-        if token not in allowed_norm:
+        # Check all normalised forms; pass if any variant appears in allowed.
+        if any(candidate in allowed_norm for candidate in _normalize_num(token)):
+            continue
+        if derived is None:
+            derived = _derived_values(allowed_norm)
+        if not _matches_derived(token, derived):
             return False
     return True
 
@@ -135,6 +229,33 @@ async def run_chat_stream(
     tool_calls_record: list[dict] = []
     messages: list[dict] = [{"role": "system", "content": _system_prompt(registry)}]
     messages.extend(history)
+
+    # When inside a project workbench, always inject the current matrix so the
+    # LLM has verified pricing data from the first turn without needing to call
+    # get_matrix explicitly.  Numbers from this blob are added to
+    # tool_results_text so the numbers-guard accepts them and their arithmetic
+    # derivatives (sums, averages, comparisons).
+    if ctx.project is not None:
+        try:
+            matrix = await _tool_get_matrix(ctx)
+            matrix_blob = json.dumps(matrix, default=str)
+            tool_results_text.append(matrix_blob)
+            tool_calls_record.append({"action": "get_matrix", "args": {"auto": True}})
+            yield {"type": "tool_call", "action": "get_matrix", "args": {"auto": True}}
+            yield {"type": "tool_result", "action": "get_matrix", "result": matrix}
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "CONTEXT[get_matrix] — current comparison matrix for this "
+                        "project. All prices and figures below are authoritative; "
+                        "you may quote them directly and perform arithmetic on them.\n"
+                        + matrix_blob[:8000]
+                    ),
+                }
+            )
+        except Exception:
+            log.warning("Auto-inject matrix failed; continuing without", exc_info=True)
 
     # Automatic RAG: retrieve relevant items from the user's whole knowledge
     # base (tenders, quote documents, My Documents library) and inject them up
@@ -237,17 +358,24 @@ async def run_chat_stream(
                     elif step2.kind == "final":
                         # Strip unverified numbers as a last resort.
                         text = _NUMBER_RE.sub("[unverified]", step2.text or "")
+                    elif step2.kind == "action":
+                        # LLM decided to call a tool to get data — hand it to
+                        # the action path below instead of finalizing.
+                        step = step2
                     else:
-                        text = "I could not verify those figures. Please try rephrasing."
-            yield {
-                "type": "final",
-                "content": text,
-                "tool_calls": tool_calls_record,
-                "matrix_changed": ctx.matrix_changed,
-                "matrix_hash": ctx.last_matrix_hash,
-                "regenerated": regenerated,
-            }
-            return
+                        # Strip numbers from the original answer rather than
+                        # showing a confusing "cannot verify" dead-end.
+                        text = _NUMBER_RE.sub("[?]", step.text or "")
+            if step.kind == "final":
+                yield {
+                    "type": "final",
+                    "content": text,
+                    "tool_calls": tool_calls_record,
+                    "matrix_changed": ctx.matrix_changed,
+                    "matrix_hash": ctx.last_matrix_hash,
+                    "regenerated": regenerated,
+                }
+                return
 
         if step.kind == "unparseable":
             log.warning("unparseable model output (protocol reminder sent): %.200s", step.text or "")
