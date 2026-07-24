@@ -2,23 +2,15 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2, ClipboardPaste, Loader2, Sparkles } from "lucide-react";
-import { api, type BomItem, type HsClassificationResult } from "@/lib/api";
+import { Plus, Trash2, Loader2, Sparkles, Check, RefreshCw } from "lucide-react";
+import { api, type BomItem, type HsCandidate } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { toast } from "@/components/ui/use-toast";
-import { parseBomTsv } from "@/lib/tsv";
+import { cn } from "@/lib/utils";
 
 export function BomTab({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
-  const [pasteText, setPasteText] = useState("");
   const [supplierName, setSupplierName] = useState("");
 
   const bom = useQuery({
@@ -42,15 +34,6 @@ export function BomTab({ projectId }: { projectId: string }) {
     // BOM changes alter the matrix rows, so refresh it too.
     qc.invalidateQueries({ queryKey: ["matrix", projectId] });
   };
-
-  const paste = useMutation({
-    mutationFn: (text: string) => api.pasteBom(projectId, text),
-    onSuccess: (rows) => {
-      setPasteText("");
-      invalidateBom();
-      toast({ title: `Imported ${rows.length} BOM line(s)` });
-    },
-  });
 
   const addRow = useMutation({
     mutationFn: () => api.createBom(projectId, { part_name: "New item" }),
@@ -78,8 +61,6 @@ export function BomTab({ projectId }: { projectId: string }) {
     },
   });
 
-  const preview = pasteText.trim() ? parseBomTsv(pasteText) : [];
-
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       {autoBomFromQuotes && (bom.data?.length ?? 0) > 0 && (
@@ -89,38 +70,6 @@ export function BomTab({ projectId }: { projectId: string }) {
         </div>
       )}
       <div className="space-y-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <ClipboardPaste className="h-4 w-4" /> Paste from Excel
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <Textarea
-              placeholder="Paste tab-separated rows (part, spec, qty, target price, notes)"
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-              onPaste={(e) => {
-                const text = e.clipboardData.getData("text");
-                if (text) setPasteText(text);
-              }}
-              rows={4}
-            />
-            {preview.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                {preview.length} row(s) detected — first: {preview[0].part_name}
-              </p>
-            )}
-            <Button
-              size="sm"
-              disabled={!pasteText.trim() || paste.isPending}
-              onClick={() => paste.mutate(pasteText)}
-            >
-              Import {preview.length > 0 ? `${preview.length} rows` : ""}
-            </Button>
-          </CardContent>
-        </Card>
-
         <div className="overflow-x-auto rounded-xl border border-border/60 bg-card shadow-soft">
           <table className="w-full min-w-[560px] text-sm">
             <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -222,132 +171,192 @@ function BomRow({
   onSave: (patch: Partial<BomItem>) => void;
   onDelete: () => void;
 }) {
-  return (
-    <tr className="border-t border-border">
-      <td className="px-2 py-1 text-muted-foreground">{item.line_no}</td>
-      <EditableCell
-        value={item.part_name}
-        onSave={(v) => onSave({ part_name: v })}
-      />
-      <EditableCell
-        value={item.spec_requirement ?? ""}
-        onSave={(v) => onSave({ spec_requirement: v || null })}
-      />
-      <EditableCell
-        value={item.quantity ?? ""}
-        onSave={(v) => onSave({ quantity: v || null })}
-      />
-      <EditableCell
-        value={item.target_price ?? ""}
-        onSave={(v) => onSave({ target_price: v || null })}
-      />
-      <HsCodeCell projectId={projectId} item={item} onSave={onSave} />
-      <td className="px-2 py-1">
-        <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete row">
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </td>
-    </tr>
-  );
-}
+  const [hsLocal, setHsLocal] = useState(item.hs_code ?? "");
 
-function HsCodeCell({
-  projectId,
-  item,
-  onSave,
-}: {
-  projectId: string;
-  item: BomItem;
-  onSave: (patch: Partial<BomItem>) => void;
-}) {
-  const [local, setLocal] = useState(item.hs_code ?? "");
-  const [open, setOpen] = useState(false);
-
-  const suggest = useMutation({
-    mutationFn: () => api.classifyBomHs(projectId, item.id),
-    onSuccess: (result: HsClassificationResult) => {
-      if (!result.candidates.length) {
-        toast({ title: "No HS code suggestions for this line" });
-        return;
-      }
-      setOpen(true);
-    },
-    onError: () =>
-      toast({
-        title: "HS suggestion failed — is the AI model running?",
-        variant: "destructive",
-      }),
+  // Generate HS-code candidates for every line as soon as the step opens, so a
+  // selectable box of suggestions sits under each item. Cached per line so
+  // switching steps doesn't re-run the model; "Regenerate" re-runs on demand.
+  const suggest = useQuery({
+    queryKey: ["hs-suggest", item.id],
+    queryFn: () => api.classifyBomHs(projectId, item.id),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
   });
+  const candidates = suggest.data?.candidates ?? [];
 
-  function apply(code: string) {
-    setLocal(code);
-    setOpen(false);
+  function commitHs(value: string) {
+    const v = value.trim();
+    if (v !== (item.hs_code ?? "")) onSave({ hs_code: v || null });
+  }
+  function applyCandidate(code: string) {
+    setHsLocal(code);
     onSave({ hs_code: code });
   }
 
   return (
-    <td className="px-1 py-1">
-      <div className="flex items-center gap-1">
-        <input
-          className="w-full rounded bg-transparent px-1 py-1 font-data text-sm outline-none focus:bg-muted"
-          placeholder="e.g. 8525.89.00"
-          value={local}
-          onChange={(e) => setLocal(e.target.value)}
-          onBlur={() => {
-            const v = local.trim();
-            if (v !== (item.hs_code ?? "")) onSave({ hs_code: v || null });
-          }}
+    <>
+      <tr className="border-t border-border">
+        <td className="px-2 py-2 align-top text-muted-foreground">{item.line_no}</td>
+        <EditableCell value={item.part_name} onSave={(v) => onSave({ part_name: v })} />
+        <EditableCell
+          value={item.spec_requirement ?? ""}
+          onSave={(v) => onSave({ spec_requirement: v || null })}
         />
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              title="Suggest HS code (AI)"
-              disabled={suggest.isPending}
-              onClick={(e) => {
-                e.preventDefault();
-                suggest.mutate();
-              }}
-            >
-              {suggest.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="h-3.5 w-3.5" />
-              )}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-80 text-sm" align="end">
-            <p className="mb-2 text-xs font-semibold">
-              AI-suggested HS codes — verify before relying on them
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {(suggest.data?.candidates ?? []).map((c) => (
-                <button
-                  key={c.hs_code}
-                  type="button"
-                  className="rounded-md border border-border px-2 py-1.5 text-left transition-colors hover:bg-muted"
-                  onClick={() => apply(c.hs_code)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-data font-semibold">{c.hs_code}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {Math.round(c.confidence * 100)}%
-                    </span>
+        <EditableCell
+          value={item.quantity ?? ""}
+          onSave={(v) => onSave({ quantity: v || null })}
+        />
+        <EditableCell
+          value={item.target_price ?? ""}
+          onSave={(v) => onSave({ target_price: v || null })}
+        />
+        <td className="px-1 py-1.5 align-top">
+          <div className="flex items-center gap-1">
+            <input
+              className="w-full rounded bg-transparent px-1 py-1 font-data text-sm outline-none focus:bg-muted"
+              placeholder="e.g. 8525.89.00"
+              value={hsLocal}
+              onChange={(e) => setHsLocal(e.target.value)}
+              onBlur={() => commitHs(hsLocal)}
+            />
+            {suggest.isFetching && (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+            )}
+          </div>
+        </td>
+        <td className="px-2 py-1.5 align-top">
+          <Button variant="ghost" size="icon" onClick={onDelete} aria-label="Delete row">
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </td>
+      </tr>
+      <tr>
+        <td colSpan={7} className="px-2 pb-3 pt-0">
+          <HsCandidatesBox
+            candidates={candidates}
+            selected={hsLocal.trim()}
+            isFetching={suggest.isFetching}
+            isError={suggest.isError}
+            onApply={applyCandidate}
+            onRegenerate={() => suggest.refetch()}
+          />
+        </td>
+      </tr>
+    </>
+  );
+}
+
+function HsCandidatesBox({
+  candidates,
+  selected,
+  isFetching,
+  isError,
+  onApply,
+  onRegenerate,
+}: {
+  candidates: HsCandidate[];
+  selected: string;
+  isFetching: boolean;
+  isError: boolean;
+  onApply: (code: string) => void;
+  onRegenerate: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-muted/30 p-2.5">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+          <Sparkles className="h-3.5 w-3.5 text-teal" />
+          AI generated HS codes
+          <span className="font-normal">— pick the best match</span>
+        </span>
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={isFetching}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+        >
+          <RefreshCw className={cn("h-3 w-3", isFetching && "animate-spin")} />
+          Regenerate
+        </button>
+      </div>
+
+      {isFetching && candidates.length === 0 ? (
+        <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating suggestions…
+        </div>
+      ) : candidates.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {candidates.map((c) => {
+            const isSel = c.hs_code === selected;
+            return (
+              <button
+                key={c.hs_code}
+                type="button"
+                onClick={() => onApply(c.hs_code)}
+                aria-pressed={isSel}
+                title={c.reasoning ?? undefined}
+                className={cn(
+                  "flex items-start justify-between gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
+                  isSel
+                    ? "border-teal bg-teal/10"
+                    : "border-border bg-card hover:border-teal/40 hover:bg-muted",
+                )}
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-data text-sm font-semibold">{c.hs_code}</span>
+                    {isSel && <Check className="h-3.5 w-3.5 shrink-0 text-teal" />}
                   </div>
-                  {c.reasoning && (
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {c.reasoning}
+                  {c.description && (
+                    <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {c.description}
                     </div>
                   )}
-                </button>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-      </div>
-    </td>
+                </div>
+                <MatchBadge confidence={c.confidence} />
+              </button>
+            );
+          })}
+        </div>
+      ) : isError ? (
+        <div className="flex items-center justify-between gap-2 px-1 py-1.5 text-xs text-muted-foreground">
+          <span>Couldn&apos;t reach the AI model — is it running?</span>
+          <button
+            type="button"
+            onClick={onRegenerate}
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <div className="px-1 py-1.5 text-xs text-muted-foreground">
+          No HS-code suggestions for this line — type one in the field above.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MatchBadge({ confidence }: { confidence: number }) {
+  const pct = Math.round(confidence * 100);
+  const tone =
+    confidence >= 0.75
+      ? "bg-teal/15 text-teal"
+      : confidence >= 0.5
+        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+        : "bg-muted text-muted-foreground";
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums",
+        tone,
+      )}
+      title="AI confidence / match"
+    >
+      {pct}%
+    </span>
   );
 }
 

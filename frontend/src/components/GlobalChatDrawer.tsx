@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquare, PanelRightClose, Sparkles } from "lucide-react";
+import { MessageSquare, PanelRightClose } from "lucide-react";
 import { useChat } from "@/contexts/ChatContext";
 import { ChatPanel } from "@/components/workbench/ChatPanel";
 import { GlobalChatPanel } from "@/components/GlobalChatPanel";
@@ -12,24 +11,12 @@ import { api, getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-const OPEN_STORAGE_KEY = "quolate-chat-open";
-
 export function GlobalChatDrawer() {
-  const { projectId, setProjectId, params, onMatrixChanged, busy } = useChat();
-  const [open, setOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  // Default: open on wide screens, closed on smaller ones; remember the choice.
-  useEffect(() => {
-    const stored = localStorage.getItem(OPEN_STORAGE_KEY);
-    if (stored !== null) setOpen(stored === "1");
-    else setOpen(window.innerWidth >= 1280);
-    setMounted(true);
-  }, []);
+  const { projectId, setProjectId, params, onMatrixChanged, chatOpen, setChatOpen } =
+    useChat();
 
   function toggle(next: boolean) {
-    setOpen(next);
-    localStorage.setItem(OPEN_STORAGE_KEY, next ? "1" : "0");
+    setChatOpen(next);
   }
 
   const projects = useQuery({
@@ -38,23 +25,8 @@ export function GlobalChatDrawer() {
     enabled: !!getToken(),
   });
 
-  if (!mounted) return null;
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => toggle(true)}
-        aria-label="Open assistant"
-        className={cn(
-          "fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-ink-deep px-4 py-3 text-sm font-medium text-paper shadow-lift transition-all hover:bg-ink",
-          busy && "animate-pulse",
-        )}
-      >
-        <Sparkles className="h-4 w-4" />
-        Assistant
-      </button>
-    );
-  }
+  // Opened from the sidebar's Assistant button; nothing floats when closed.
+  if (!chatOpen) return null;
 
   return (
     <>

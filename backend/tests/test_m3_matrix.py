@@ -126,6 +126,51 @@ def test_best_value_flag_lowest_landed(auth_client):
     assert row["best_supplier_id"] == suppliers["Globex"]
 
 
+def test_selected_supplier_overrides_best_in_quotation(auth_client):
+    pid = _project(
+        auth_client, defaults={"duty_pct": 0, "lc_pct": 0, "freight_per_unit": 0}
+    )
+    line = _add_bom(auth_client, pid, "Widget A")
+    _upload_quote(auth_client, pid, supplier="Cheap", line_no=line, price=100.0)
+    _upload_quote(auth_client, pid, supplier="Pricey", line_no=line, price=150.0)
+
+    matrix = auth_client.get(f"/projects/{pid}/matrix").json()
+    row = matrix["rows"][0]
+    suppliers = {s["name"]: s["id"] for s in matrix["suppliers"]}
+    assert row["best_supplier_id"] == suppliers["Cheap"]
+    assert row["selected_supplier_id"] is None
+
+    # By default the quotation uses the cheapest covering supplier (100).
+    q1 = auth_client.post(f"/projects/{pid}/quotations", json={"sources": []}).json()
+    assert float(q1["versions"][0]["lines"][0]["unit_cost"]) == 100.0
+
+    # Pick the pricier supplier for this line.
+    bom_item_id = row["bom_item_id"]
+    r = auth_client.patch(
+        f"/bom/{bom_item_id}", json={"selected_supplier_id": suppliers["Pricey"]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["selected_supplier_id"] == suppliers["Pricey"]
+    matrix2 = auth_client.get(f"/projects/{pid}/matrix").json()
+    assert matrix2["rows"][0]["selected_supplier_id"] == suppliers["Pricey"]
+
+    # A new quotation now uses the selected (pricier) supplier's landed cost.
+    q2 = auth_client.post(f"/projects/{pid}/quotations", json={"sources": []}).json()
+    assert float(q2["versions"][0]["lines"][0]["unit_cost"]) == 150.0
+
+    # A supplier from another project (or bogus id) is rejected.
+    bad = auth_client.patch(
+        f"/bom/{bom_item_id}",
+        json={"selected_supplier_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert bad.status_code == 422
+
+    # Clearing the selection reverts the quote to the cheapest.
+    auth_client.patch(f"/bom/{bom_item_id}", json={"selected_supplier_id": None})
+    q3 = auth_client.post(f"/projects/{pid}/quotations", json={"sources": []}).json()
+    assert float(q3["versions"][0]["lines"][0]["unit_cost"]) == 100.0
+
+
 def test_gap_cell_when_supplier_missing_line(auth_client):
     pid = _project(auth_client)
     l1 = _add_bom(auth_client, pid, "Widget A")
@@ -187,10 +232,13 @@ def test_export_xlsx_opens_and_matches_matrix(auth_client):
     ws = wb["Matrix"]
     header = [c.value for c in ws[1]]
     assert header[0] == "Line"
-    assert any("ACME" in str(h) for h in header)
-    # Data row: last column is ACME landed.
+    acme_col = next(i for i, h in enumerate(header) if h and "ACME" in str(h))
+    # Final column names the supplier chosen for the quotation.
+    assert header[-1] == "Selected supplier"
     data_row = [c.value for c in ws[2]]
-    assert data_row[-1] == 118.0
+    assert data_row[acme_col] == 118.0
+    # ACME is the only (hence best/selected) supplier for the line.
+    assert data_row[-1] == "ACME"
 
 
 def _first_doc(auth_client, pid: str) -> str:

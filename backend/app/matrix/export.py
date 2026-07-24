@@ -18,10 +18,12 @@ def matrix_to_xlsx(matrix: dict) -> bytes:
     header = ["Line", "Part", "Spec", "Qty", "Target"]
     for s in suppliers:
         header.append(f"{s['name']} ({currency})")
+    header.append("Selected supplier")
     ws.append(header)
     for cell in ws[1]:
         cell.font = Font(bold=True)
 
+    supplier_names = {s["id"]: s["name"] for s in suppliers}
     for row in matrix.get("rows", []):
         line = [
             row.get("line_no"),
@@ -35,6 +37,15 @@ def matrix_to_xlsx(matrix: dict) -> bytes:
             cell = cells.get(s["id"], {})
             landed = cell.get("landed")
             line.append(landed if landed is not None else None)
+        # Which supplier feeds the quotation: explicit pick (if priced) else best.
+        selected = row.get("selected_supplier_id")
+        best = row.get("best_supplier_id")
+        chosen = (
+            selected
+            if selected and (cells.get(selected) or {}).get("landed") is not None
+            else best
+        )
+        line.append(supplier_names.get(chosen, "") if chosen else "")
         ws.append(line)
 
     # Summary sheet.

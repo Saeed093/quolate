@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import { ReviewSplitView } from "@/components/workbench/ReviewSplitView";
+import { ParseProgress } from "@/components/workbench/ParseProgress";
 
 const STATUS_VARIANT: Record<string, "ok" | "verify" | "gap" | "secondary"> = {
   parsed: "ok",
@@ -44,7 +45,16 @@ export function InboxTab({
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryFilter, setLibraryFilter] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // OCR languages applied to newly uploaded scans/images. English on by default;
+  // Chinese roughly doubles OCR time, so it's opt-in.
+  const [ocrLangs, setOcrLangs] = useState<string[]>(["en"]);
   const notifiedAutoBom = useRef<Set<string>>(new Set());
+
+  const toggleLang = useCallback((lang: string) => {
+    setOcrLangs((prev) =>
+      prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang],
+    );
+  }, []);
 
   const docs = useQuery({
     queryKey: ["documents", projectId],
@@ -86,9 +96,17 @@ export function InboxTab({
   });
 
   const upload = useMutation({
-    mutationFn: ({ files, kind }: { files: File[]; kind?: string }) => {
+    mutationFn: ({
+      files,
+      kind,
+      langs,
+    }: {
+      files: File[];
+      kind?: string;
+      langs?: string[];
+    }) => {
       startUpload(uploadId, `Uploading ${files.length} file(s)…`);
-      return api.uploadDocuments(projectId, files, kind);
+      return api.uploadDocuments(projectId, files, kind, langs);
     },
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["documents", projectId] });
@@ -101,9 +119,9 @@ export function InboxTab({
 
   const onDrop = useCallback(
     (accepted: File[]) => {
-      if (accepted.length) upload.mutate({ files: accepted });
+      if (accepted.length) upload.mutate({ files: accepted, langs: ocrLangs });
     },
-    [upload],
+    [upload, ocrLangs],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop });
@@ -167,11 +185,12 @@ export function InboxTab({
           if (f) files.push(f);
         }
       }
-      if (files.length) upload.mutate({ files, kind: "screenshot" });
+      if (files.length)
+        upload.mutate({ files, kind: "screenshot", langs: ocrLangs });
     }
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [upload]);
+  }, [upload, ocrLangs]);
 
   useEffect(() => {
     if (openDocId) {
@@ -230,6 +249,29 @@ export function InboxTab({
         <p className="text-xs text-muted-foreground">
           You can also paste a screenshot anywhere on this page.
         </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border/60 bg-card/40 px-3 py-2 text-sm">
+        <span className="text-xs font-medium text-muted-foreground">
+          OCR languages (scans &amp; images)
+        </span>
+        <label className="flex cursor-pointer items-center gap-2">
+          <Checkbox
+            checked={ocrLangs.includes("en")}
+            onCheckedChange={() => toggleLang("en")}
+          />
+          English
+        </label>
+        <label className="flex cursor-pointer items-center gap-2">
+          <Checkbox
+            checked={ocrLangs.includes("ch")}
+            onCheckedChange={() => toggleLang("ch")}
+          />
+          Chinese
+        </label>
+        <span className="text-xs text-muted-foreground">
+          Fewer languages parse faster — English only is quickest.
+        </span>
       </div>
 
       <div className="flex justify-end gap-2">
@@ -335,6 +377,7 @@ export function InboxTab({
                     {d.error && (
                       <div className="mt-1 truncate text-xs text-gap">{d.error}</div>
                     )}
+                    <ParseProgress doc={d} />
                   </div>
                 </button>
                 {(d.status === "failed" ||

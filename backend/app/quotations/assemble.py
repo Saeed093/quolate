@@ -95,8 +95,16 @@ async def _assemble_lines_from_matrix(
     matrix = await build_matrix(session, project, currency=project.base_currency)
     lines: list[QuotationLine] = []
     for row in matrix["rows"]:
+        cells = row.get("cells", {})
+        # The user's explicit pick on the Compare page wins when it has a usable
+        # landed cost; otherwise fall back to the cheapest covering supplier.
+        selected_sid = row.get("selected_supplier_id")
         best_sid = row.get("best_supplier_id")
-        cell = row.get("cells", {}).get(best_sid) if best_sid else None
+        if selected_sid and (cells.get(selected_sid) or {}).get("landed") is not None:
+            chosen_sid = selected_sid
+        else:
+            chosen_sid = best_sid
+        cell = cells.get(chosen_sid) if chosen_sid else None
         unit_cost = _dec(cell.get("landed")) if cell else None
         cost_source = None
         if cell is not None and unit_cost is not None:

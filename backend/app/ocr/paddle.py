@@ -6,11 +6,19 @@ imported on first use (heavy); tests monkeypatch `run_ocr`.
 from __future__ import annotations
 
 import io
+import queue as _queue
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from app.config import settings
 
-_MODELS: dict[str, object] = {}
+# Per-language object pool of PaddleOCR instances. A single PaddleOCR predictor
+# is NOT safe to call concurrently from multiple threads, so parallel page OCR
+# borrows one instance per thread and returns it when done. The pool grows only
+# to the peak concurrency and keeps instances warm across documents.
+_POOLS: dict[str, _queue.Queue] = {}
+_POOL_LOCK = threading.Lock()
 
 
 @dataclass
@@ -31,12 +39,37 @@ class OcrPage:
         return "\n".join(line.text for line in self.lines)
 
 
-def _get_model(lang: str):
-    if lang not in _MODELS:
-        from paddleocr import PaddleOCR  # heavy import, lazy
+def _build_model(lang: str):
+    from paddleocr import PaddleOCR  # heavy import, lazy
 
-        _MODELS[lang] = PaddleOCR(use_angle_cls=True, lang=lang, show_log=False)
-    return _MODELS[lang]
+    return PaddleOCR(use_angle_cls=True, lang=lang, show_log=False)
+
+
+def _pool_for(lang: str) -> _queue.Queue:
+    with _POOL_LOCK:
+        pool = _POOLS.get(lang)
+        if pool is None:
+            pool = _queue.Queue()
+            _POOLS[lang] = pool
+        return pool
+
+
+@contextmanager
+def _borrow_model(lang: str):
+    """Check out a per-language model instance, returning it to the pool after.
+
+    Grows the pool by one when every warm instance is in use, so the number of
+    live models settles at the peak concurrency for that language.
+    """
+    pool = _pool_for(lang)
+    try:
+        model = pool.get_nowait()
+    except _queue.Empty:
+        model = _build_model(lang)
+    try:
+        yield model
+    finally:
+        pool.put(model)
 
 
 def _to_numpy(image_bytes: bytes):
@@ -48,8 +81,8 @@ def _to_numpy(image_bytes: bytes):
 
 
 def _run_single_lang(image_np, lang: str) -> OcrPage:
-    model = _get_model(lang)
-    result = model.ocr(image_np, cls=True)
+    with _borrow_model(lang) as model:
+        result = model.ocr(image_np, cls=True)
     lines: list[OcrLine] = []
     confidences: list[float] = []
     # PaddleOCR returns [[ [box, (text, conf)], ... ]]

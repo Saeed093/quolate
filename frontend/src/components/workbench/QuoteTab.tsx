@@ -27,6 +27,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 
 /**
@@ -309,6 +315,8 @@ function QuotationReview({
   const [lines, setLines] = useState<EditLine[]>(() =>
     version.lines.map((l) => ({ ...l })),
   );
+  // After a successful save we ask how the user wants their finished quote.
+  const [downloadPromptOpen, setDownloadPromptOpen] = useState(false);
 
   // Reset local state whenever the underlying version changes (e.g. after save).
   useEffect(() => {
@@ -413,6 +421,7 @@ function QuotationReview({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["quotations", projectId] });
       toast({ title: "Quotation saved" });
+      setDownloadPromptOpen(true);
     },
     onError: (err: Error) =>
       toast({ title: "Save failed", description: err.message, variant: "destructive" }),
@@ -426,6 +435,7 @@ function QuotationReview({
         fmt,
         `${quotation.quote_no}-v${version.version_no}.${fmt}`,
       ),
+    onSuccess: () => setDownloadPromptOpen(false),
     onError: (err: Error) =>
       toast({ title: "Download failed", description: err.message, variant: "destructive" }),
   });
@@ -717,6 +727,50 @@ function QuotationReview({
           </div>
         )}
       </CardContent>
+
+      {/* After saving, offer the finished quote as a download. */}
+      <Dialog open={downloadPromptOpen} onOpenChange={setDownloadPromptOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Quotation saved — download it?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Choose a format for {quotation.quote_no}. You can always download
+            again later from the buttons at the top.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              className="h-auto flex-col gap-1 py-3"
+              disabled={download.isPending}
+              onClick={() => download.mutate("docx")}
+            >
+              <FileDown className="h-5 w-5" />
+              <span>Word (DOCX)</span>
+              <span className="text-xs font-normal text-muted-foreground">
+                Customer-facing
+              </span>
+            </Button>
+            <Button
+              variant="outline"
+              className="h-auto flex-col gap-1 py-3"
+              disabled={download.isPending}
+              onClick={() => download.mutate("xlsx")}
+            >
+              <FileSpreadsheet className="h-5 w-5" />
+              <span>Excel (XLSX)</span>
+              <span className="text-xs font-normal text-muted-foreground">
+                Internal buildup
+              </span>
+            </Button>
+          </div>
+          <div className="mt-1 flex justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setDownloadPromptOpen(false)}>
+              Not now
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

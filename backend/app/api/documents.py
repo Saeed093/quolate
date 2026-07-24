@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import get_owned_document, get_owned_project
 from app.auth.deps import get_current_user
+from app.config import settings
 from app.db.models import Document, DocumentEmbedding, ExtractedField, Quote, User
 from app.db.session import get_session
 from app.ingestion.rasterize import pdf_page_to_png
@@ -33,6 +34,22 @@ _IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp
 def _ext(filename: str) -> str:
     idx = filename.rfind(".")
     return filename[idx:].lower() if idx != -1 else ""
+
+
+def _normalize_ocr_langs(raw: str | None) -> str | None:
+    """CSV of requested OCR languages -> stored CSV, keeping only supported ones.
+
+    Returns None when nothing valid is requested, so the pipeline falls back to
+    the configured default (English only).
+    """
+    if not raw:
+        return None
+    allowed = settings.ocr_langs_list
+    picked = [x.strip() for x in raw.split(",") if x.strip() and x.strip() in allowed]
+    # De-dup while preserving order.
+    seen: set[str] = set()
+    ordered = [x for x in picked if not (x in seen or seen.add(x))]
+    return ",".join(ordered) if ordered else None
 
 
 def _infer_kind(filename: str, mime: str | None, given: str | None) -> str:
@@ -74,11 +91,13 @@ async def upload_documents(
     files: list[UploadFile] = File(...),
     kind: str | None = Form(default=None),
     supplier_id: uuid.UUID | None = Form(default=None),
+    ocr_langs: str | None = Form(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[Document]:
     await get_owned_project(project_id, user, session)
 
+    langs = _normalize_ocr_langs(ocr_langs)
     created: list[Document] = []
     for upload in files:
         data = await upload.read()
@@ -94,6 +113,9 @@ async def upload_documents(
         dup = existing.scalar_one_or_none()
         if dup is not None:
             if dup.status == "failed":
+                # Re-uploading a previously failed file may carry a new language
+                # choice; honor it on the retry.
+                dup.ocr_langs = langs
                 await _reset_document_for_reparse(session, dup)
                 await queue.enqueue(
                     session, "parse_document", {"document_id": str(dup.id)}
@@ -114,6 +136,7 @@ async def upload_documents(
             mime_type=upload.content_type,
             sha256=sha,
             status="pending",
+            ocr_langs=langs,
         )
         session.add(doc)
         await session.flush()

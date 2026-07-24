@@ -13,12 +13,14 @@ import {
   Rss,
   FileText,
   Calculator,
+  Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LlmStatusBadge } from "@/components/LlmStatusBadge";
 import { QuolateLockup } from "@/components/QuolateLockup";
+import { useChat } from "@/contexts/ChatContext";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -93,6 +95,7 @@ export function AppShell({
   const router = useRouter();
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { chatOpen, setChatOpen, busy } = useChat();
 
   useEffect(() => {
     setSidebarOpen(false);
@@ -155,6 +158,18 @@ export function AppShell({
         />
 
         <div className="mt-auto flex flex-col gap-2 border-t border-white/10 px-3 py-3">
+          <button
+            type="button"
+            onClick={() => setChatOpen(!chatOpen)}
+            aria-label={chatOpen ? "Hide assistant" : "Open assistant"}
+            className={cn(
+              "flex w-full items-center justify-center gap-2 rounded-lg bg-teal px-3 py-2.5 text-sm font-semibold text-ink-deep shadow-lift transition-all hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal/50",
+              busy && "animate-pulse",
+            )}
+          >
+            <Sparkles className="h-4 w-4" />
+            Assistant
+          </button>
           <LlmStatusBadge className="dark-surface" />
           <Button
             variant="ghost"

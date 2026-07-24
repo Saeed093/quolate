@@ -58,12 +58,31 @@ class Settings(BaseSettings):
     llm_keep_alive: str = "2h"  # how long Ollama keeps the model warm
     gpu_load_timeout_seconds: float = 300.0  # /gpu/start model-load timeout
 
+    # Parse-time estimation (per-op seconds; tuned for this deployment's CPU OCR
+    # + local LLM). Only drives the progress bar / ETA, never correctness.
+    parse_est_base_seconds: float = 2.0  # download + routing + overhead
+    parse_est_ocr_page_seconds: float = 3.5  # per page, per OCR language
+    parse_est_llm_chunk_seconds: float = 9.0  # per LLM extraction chunk
+    parse_est_persist_seconds: float = 2.0  # persist fields + embedding
+
     # Embeddings
     embedding_model: str = "bge-m3"
     embedding_dim: int = 1024
 
     # OCR
+    # ocr_langs is the set of languages OFFERED at upload time (the picker).
+    # ocr_default_langs is what's pre-selected when the uploader picks nothing.
+    # Chinese roughly doubles OCR time (a second full pass per page), so it is
+    # off by default and only run when the uploader opts in.
     ocr_langs: str = "en,ch"
+    ocr_default_langs: str = "en"
+    # Rasterization DPI for scanned PDFs. 200 is print-crisp but slow; 150 is
+    # plenty for OCR of typed invoices/quotations and ~44% fewer pixels to scan.
+    ocr_dpi: int = 150
+    # Pages of a scanned PDF OCR'd in parallel. PaddleOCR is CPU-bound and the
+    # LLM/GPU sits idle during OCR, so a small pool cuts multi-page wall time.
+    # 1 disables parallelism.
+    ocr_max_workers: int = 2
 
     # Tender scraping
     scrape_cron: str = "0 7 * * *"
@@ -85,7 +104,15 @@ class Settings(BaseSettings):
 
     @property
     def ocr_langs_list(self) -> list[str]:
+        """Languages OFFERED at upload (also the fallback if a job carries none)."""
         return [x.strip() for x in self.ocr_langs.split(",") if x.strip()]
+
+    @property
+    def ocr_default_langs_list(self) -> list[str]:
+        """Pre-selected languages when the uploader specifies none."""
+        allowed = set(self.ocr_langs_list)
+        picked = [x.strip() for x in self.ocr_default_langs.split(",") if x.strip()]
+        return [x for x in picked if x in allowed] or (self.ocr_langs_list[:1] or ["en"])
 
     @property
     def allow_origins_list(self) -> list[str]:

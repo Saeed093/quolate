@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.common import get_owned_project
 from app.auth.deps import get_current_user
 from app.bom_parser import parse_bom_tsv
-from app.db.models import BomItem, User
+from app.db.models import BomItem, Supplier, User
 from app.db.session import get_session
 from app.duty.classifier import ClassificationInputError, classify_hs_code
 from app.duty.schemas import HsClassificationOut
@@ -161,7 +161,22 @@ async def update_bom_item(
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="BOM item not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    # A chosen supplier must belong to this project (or be cleared with null).
+    if data.get("selected_supplier_id") is not None:
+        from fastapi import HTTPException
+
+        exists = await session.execute(
+            select(Supplier.id).where(
+                Supplier.id == data["selected_supplier_id"],
+                Supplier.project_id == item.project_id,
+            )
+        )
+        if exists.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=422, detail="Selected supplier is not in this project"
+            )
+    for key, value in data.items():
         setattr(item, key, value)
     await session.commit()
     await session.refresh(item)

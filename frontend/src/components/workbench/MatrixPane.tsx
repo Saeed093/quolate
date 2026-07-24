@@ -1,7 +1,8 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Download, Star } from "lucide-react";
+import { Fragment } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Download, Star } from "lucide-react";
 import { api, getToken, type MatrixCell, type MatrixParams } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -106,9 +107,19 @@ export function MatrixPane({
   params: MatrixParams;
   onOpenSource: (documentId: string) => void;
 }) {
+  const qc = useQueryClient();
   const matrix = useQuery({
     queryKey: ["matrix", projectId, params],
     queryFn: () => api.getMatrix(projectId, params),
+  });
+
+  const selectSupplier = useMutation({
+    mutationFn: (vars: { bomItemId: string; supplierId: string | null }) =>
+      api.updateBom(vars.bomItemId, { selected_supplier_id: vars.supplierId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["matrix", projectId] });
+      qc.invalidateQueries({ queryKey: ["bom", projectId] });
+    },
   });
 
   if (matrix.isLoading)
@@ -161,6 +172,10 @@ export function MatrixPane({
             {m.summary.fields_needing_review} to verify
           </Badge>
         )}
+        <p className="text-xs text-muted-foreground">
+          Tick a supplier per line to choose it for the quotation — defaults to
+          the best value (<Star className="inline h-3 w-3 fill-ok text-ok" />).
+        </p>
         <div className="ml-auto">
           <Button size="sm" variant="outline" onClick={exportXlsx}>
             <Download className="h-4 w-4" /> Export XLSX
@@ -169,14 +184,20 @@ export function MatrixPane({
       </div>
 
       <div className="overflow-auto rounded-xl border border-border/60 bg-card shadow-soft">
-        <table className="w-full border-collapse text-sm" data-testid="matrix-table">
+        <table
+          className="w-full border-collapse text-sm"
+          data-testid="matrix-table"
+        >
           <thead>
             <tr className="bg-muted/50">
-              <th className="sticky left-0 z-10 bg-muted px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="sticky left-0 z-20 min-w-[8rem] bg-muted px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 BOM line
               </th>
               {m.suppliers.map((s) => (
-                <th key={s.id} className="min-w-[9rem] px-3 py-2.5 text-left font-semibold">
+                <th
+                  key={s.id}
+                  className="min-w-[9rem] border-l border-border/40 px-3 py-2.5 text-left align-bottom font-semibold"
+                >
                   {s.name}
                   {s.country && (
                     <span className="ml-1 text-xs font-normal text-muted-foreground">
@@ -195,47 +216,98 @@ export function MatrixPane({
           <tbody>
             {m.rows.map((row) => {
               const visibleFields = getVisibleFields(row.cells);
+              const colCount = Math.max(1, m.suppliers.length + 1);
+              // The supplier feeding the quote: the user's explicit pick when
+              // it has a price, otherwise the cheapest ("best value").
+              const selCell = row.selected_supplier_id
+                ? row.cells[row.selected_supplier_id]
+                : undefined;
+              const effectiveSelected =
+                selCell && selCell.confidence_state !== "gap" && selCell.landed != null
+                  ? row.selected_supplier_id
+                  : row.best_supplier_id;
               return (
-                <tr
-                  key={row.bom_item_id}
-                  className="border-t border-border/60 transition-colors hover:bg-muted/30"
-                >
-                  <td className="sticky left-0 z-10 bg-card px-3 py-2">
-                    <div className="font-medium">
-                      {row.line_no}. {row.part_name}
-                    </div>
-                    {row.spec_requirement && (
-                      <div className="text-xs text-muted-foreground">
-                        {row.spec_requirement}
+                <Fragment key={row.bom_item_id}>
+                  {/* Section band naming the BOM line, spanning the full width. */}
+                  <tr className="border-t-2 border-border/70 bg-muted/40">
+                    <td colSpan={colCount} className="px-3 py-2">
+                      <div className="sticky left-0 inline-flex max-w-[calc(100vw-6rem)] flex-col">
+                        <span className="font-semibold text-foreground">
+                          {row.line_no}. {row.part_name}
+                        </span>
+                        {row.spec_requirement && (
+                          <span className="text-xs font-normal text-muted-foreground">
+                            {row.spec_requirement}
+                          </span>
+                        )}
                       </div>
-                    )}
-                    {visibleFields.length > 0 && (
-                      <div className="mt-1.5 space-y-0.5 border-t border-border/40 pt-1.5">
-                        {visibleFields.map((f) => (
-                          <div
-                            key={f}
-                            className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60"
-                          >
-                            {getFieldLabel(f)}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  {m.suppliers.map((s) => {
-                    const cell = row.cells[s.id];
-                    return (
-                      <td key={s.id} className="p-1">
-                        <MatrixCellView
-                          cell={cell}
+                    </td>
+                  </tr>
+
+                  {/* Price row: the headline landed cost per supplier. */}
+                  <tr className="border-t border-border/50">
+                    <th
+                      scope="row"
+                      className="sticky left-0 z-10 bg-card px-3 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                    >
+                      Landed
+                    </th>
+                    {m.suppliers.map((s) => (
+                      <td
+                        key={s.id}
+                        className="border-l border-border/40 p-1 align-top"
+                      >
+                        <PriceCell
+                          cell={row.cells[s.id]}
                           currency={currency}
                           onOpenSource={onOpenSource}
-                          visibleFields={visibleFields}
+                          selected={s.id === effectiveSelected}
+                          onSelect={() =>
+                            selectSupplier.mutate({
+                              bomItemId: row.bom_item_id,
+                              supplierId: s.id,
+                            })
+                          }
                         />
                       </td>
-                    );
-                  })}
-                </tr>
+                    ))}
+                  </tr>
+
+                  {/* One aligned row per attribute so labels and values line up. */}
+                  {visibleFields.map((field) => (
+                    <tr
+                      key={field}
+                      className="border-t border-border/30 transition-colors hover:bg-muted/20"
+                    >
+                      <th
+                        scope="row"
+                        className="sticky left-0 z-10 bg-card px-3 py-1 text-left text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70"
+                      >
+                        {getFieldLabel(field)}
+                      </th>
+                      {m.suppliers.map((s) => {
+                        const cell = row.cells[s.id];
+                        const val = cell ? getFieldValue(cell, field) : "—";
+                        const isEmpty = !val || val === "—";
+                        return (
+                          <td
+                            key={s.id}
+                            className={cn(
+                              "border-l border-border/40 px-3 py-1 align-top text-xs tabular-nums",
+                              isEmpty
+                                ? "text-muted-foreground/40"
+                                : field === "warranty"
+                                  ? "font-medium text-ok"
+                                  : "text-foreground",
+                            )}
+                          >
+                            {isEmpty ? "—" : val}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </Fragment>
               );
             })}
             {m.rows.length === 0 && (
@@ -288,84 +360,71 @@ function Summary({
   );
 }
 
-function MatrixCellView({
+function PriceCell({
   cell,
   currency,
   onOpenSource,
-  visibleFields,
+  selected,
+  onSelect,
 }: {
   cell: MatrixCell | undefined;
   currency: string;
   onOpenSource: (documentId: string) => void;
-  visibleFields: string[];
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const isGap = !cell || cell.confidence_state === "gap";
-
-  const metaSection = visibleFields.length > 0 ? (
-    <div className="mt-1.5 w-full space-y-0.5 border-t border-border/40 pt-1.5">
-      {visibleFields.map((field) => {
-        // Even gap cells can carry moq/lead_time from quotes that have no price,
-        // so always try to read the value and only fall back to null for missing cells.
-        const val = cell ? getFieldValue(cell, field) : null;
-        const isEmpty = !val || val === "—";
-        return (
-          <div
-            key={field}
-            className={cn(
-              "text-[10px] tabular-nums",
-              isEmpty
-                ? "text-muted-foreground/40"
-                : field === "warranty"
-                  ? "font-medium text-ok"
-                  : "font-medium text-foreground",
-            )}
-          >
-            {isEmpty ? "—" : val}
-          </div>
-        );
-      })}
-    </div>
-  ) : null;
 
   if (isGap) {
     return (
       <div
-        tabIndex={0}
         className={cn(
-          "flex flex-col rounded border px-2 py-1.5 text-xs",
+          "flex min-h-[2.75rem] items-center justify-center rounded border text-xs text-muted-foreground",
           cellStateClass("gap"),
         )}
       >
-        <div className="flex min-h-[2.5rem] items-center justify-center text-muted-foreground">
-          —
-        </div>
-        {metaSection}
+        —
       </div>
     );
   }
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          tabIndex={0}
-          className={cn(
-            "flex w-full flex-col rounded border px-2 py-1.5 text-left outline-none focus:ring-2 focus:ring-ring/30",
-            cellStateClass(cell.confidence_state),
-          )}
-        >
-          <span className="flex items-center gap-1 font-data font-semibold tabular-nums">
-            {formatCurrency(cell.landed, currency)}
-            {cell.best_value && (
-              <Star className="h-3.5 w-3.5 fill-ok text-ok" aria-label="Best value" />
+    <div className={cn("relative rounded", selected && "ring-2 ring-teal")}>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        onClick={onSelect}
+        title={selected ? "Selected for the quotation" : "Choose this supplier for the quotation"}
+        className={cn(
+          "absolute right-1 top-1 z-10 flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
+          selected
+            ? "border-teal bg-teal text-white"
+            : "border-muted-foreground/40 bg-card/70 text-transparent hover:border-teal hover:text-teal",
+        )}
+      >
+        <Check className="h-3 w-3" />
+      </button>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            tabIndex={0}
+            className={cn(
+              "flex min-h-[2.75rem] w-full flex-col justify-center rounded border px-2 py-1.5 pr-6 text-left outline-none transition-shadow hover:shadow-soft focus:ring-2 focus:ring-ring/30",
+              cellStateClass(cell.confidence_state),
             )}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            FOB {formatCurrency(cell.fob, currency)}
-          </span>
-          {metaSection}
-        </button>
-      </PopoverTrigger>
+          >
+            <span className="flex items-center gap-1 font-data text-sm font-semibold tabular-nums">
+              {formatCurrency(cell.landed, currency)}
+              {cell.best_value && (
+                <Star className="h-3.5 w-3.5 fill-ok text-ok" aria-label="Best value" />
+              )}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              FOB {formatCurrency(cell.fob, currency)}
+            </span>
+          </button>
+        </PopoverTrigger>
       <PopoverContent className="w-72 text-sm">
         <div className="mb-2 flex items-center justify-between">
           <span className="font-semibold">Quote details</span>
@@ -451,7 +510,8 @@ function MatrixCellView({
           </Button>
         )}
       </PopoverContent>
-    </Popover>
+      </Popover>
+    </div>
   );
 }
 

@@ -127,10 +127,17 @@ async def build_matrix(
     currency: str | None = None,
     overrides: dict | None = None,
     fx_rate: float | None = None,
+    display_rate: float | None = None,
 ) -> dict:
     target_ccy = (currency or project.base_currency or "USD").upper()
     assumptions = resolve_assumptions(project, overrides)
     fx_overrides = assumptions["fx_overrides"]
+
+    # A user-supplied display rate ("1 USD = X <target>") overrides the bundled
+    # rate for the display currency only, so the whole matrix reflects the rate
+    # shown in the currency box. USD is the rate-table base, so it needs no rate.
+    if display_rate and display_rate > 0 and target_ccy != "USD":
+        fx_overrides = {**fx_overrides, target_ccy: display_rate}
 
     bom_rows = (
         (
@@ -415,6 +422,11 @@ async def build_matrix(
                 "target_price": _num(to_decimal(item.target_price)),
                 "hs_code": row_hs,
                 "best_supplier_id": best_supplier_id,
+                "selected_supplier_id": (
+                    str(item.selected_supplier_id)
+                    if item.selected_supplier_id
+                    else None
+                ),
                 "spread_pct": _num(spread_pct([lv for _, lv in row_landed])),
                 "cells": cells,
             }
@@ -455,6 +467,11 @@ async def build_matrix(
             "fx_overrides": fx_overrides,
             "fx_rate_pkr_usd": _num(duty_fx),
             "fx_rate_source": duty_fx_source,
+            "display_rate": (
+                float(display_rate)
+                if display_rate and display_rate > 0 and target_ccy != "USD"
+                else None
+            ),
             "duty_as_of": duty_as_of.isoformat() if duty_as_of else None,
         },
         "suppliers": [

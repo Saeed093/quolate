@@ -4,8 +4,10 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 from app import ocr as ocr_module
+from app.config import settings
 from app.ingestion.rasterize import pdf_page_to_png
 from app.ingestion.types import ExtractedContent, PageContent
 
@@ -30,7 +32,9 @@ def _ext(filename: str) -> str:
 
 
 # ---------- PDF ----------
-def _extract_pdf(data: bytes) -> ExtractedContent:
+def _extract_pdf(
+    data: bytes, ocr_langs: list[str], dpi: int, max_workers: int
+) -> ExtractedContent:
     import fitz
 
     doc = fitz.open(stream=data, filetype="pdf")
@@ -50,25 +54,28 @@ def _extract_pdf(data: bytes) -> ExtractedContent:
         ]
         return ExtractedContent(pages=pages, ocr_used=False, kind_detail="pdf_text")
 
-    # Scanned PDF -> rasterize + OCR each page.
-    pages = []
-    for i in range(page_count):
-        png = pdf_page_to_png(data, i)
-        page = ocr_module.run_ocr(png)
-        pages.append(
-            PageContent(
-                page_no=i + 1,
-                text=page.text,
-                ocr_lines=page.lines,
-                ocr_used=True,
-            )
+    # Scanned PDF -> rasterize + OCR each page. Pages are independent, so OCR
+    # them in a small thread pool (the model pool in app.ocr keeps this safe).
+    def _ocr_page(i: int) -> PageContent:
+        png = pdf_page_to_png(data, i, dpi=dpi)
+        page = ocr_module.run_ocr(png, langs=ocr_langs)
+        return PageContent(
+            page_no=i + 1, text=page.text, ocr_lines=page.lines, ocr_used=True
         )
+
+    if max_workers > 1 and page_count > 1:
+        with ThreadPoolExecutor(max_workers=min(max_workers, page_count)) as pool:
+            pages = list(pool.map(_ocr_page, range(page_count)))
+    else:
+        pages = [_ocr_page(i) for i in range(page_count)]
     return ExtractedContent(pages=pages, ocr_used=True, kind_detail="pdf_ocr")
 
 
 # ---------- Image ----------
-def _extract_image(data: bytes, page_no: int = 1) -> PageContent:
-    page = ocr_module.run_ocr(data)
+def _extract_image(
+    data: bytes, page_no: int = 1, ocr_langs: list[str] | None = None
+) -> PageContent:
+    page = ocr_module.run_ocr(data, langs=ocr_langs)
     return PageContent(
         page_no=page_no, text=page.text, ocr_lines=page.lines, ocr_used=True
     )
@@ -212,7 +219,9 @@ def parse_whatsapp_chat(chat_text: str) -> str:
     return "\n".join(lines)
 
 
-def _extract_whatsapp_zip(data: bytes) -> ExtractedContent:
+def _extract_whatsapp_zip(
+    data: bytes, ocr_langs: list[str] | None = None
+) -> ExtractedContent:
     pages: list[PageContent] = []
     ocr_used = False
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -232,7 +241,7 @@ def _extract_whatsapp_zip(data: bytes) -> ExtractedContent:
             if _ext(name) in _IMAGE_EXTS:
                 try:
                     media = zf.read(name)
-                    page = _extract_image(media, page_no=page_no)
+                    page = _extract_image(media, page_no=page_no, ocr_langs=ocr_langs)
                     if page.text.strip():
                         pages.append(page)
                         ocr_used = True
@@ -243,16 +252,29 @@ def _extract_whatsapp_zip(data: bytes) -> ExtractedContent:
 
 
 # ---------- Dispatcher ----------
-def extract_content(filename: str, mime_type: str | None, data: bytes) -> ExtractedContent:
+def extract_content(
+    filename: str,
+    mime_type: str | None,
+    data: bytes,
+    *,
+    ocr_langs: list[str] | None = None,
+    dpi: int | None = None,
+    max_workers: int | None = None,
+) -> ExtractedContent:
     ext = _ext(filename)
     mime = (mime_type or "").lower()
 
+    # OCR knobs default to config; the uploader can override langs per document.
+    langs = ocr_langs or settings.ocr_default_langs_list
+    dpi = dpi or settings.ocr_dpi
+    max_workers = max_workers or settings.ocr_max_workers
+
     if ext in _PDF_EXTS or "pdf" in mime:
-        return _extract_pdf(data)
+        return _extract_pdf(data, langs, dpi, max_workers)
     if ext in _ZIP_EXTS or "zip" in mime:
-        return _extract_whatsapp_zip(data)
+        return _extract_whatsapp_zip(data, ocr_langs=langs)
     if ext in _IMAGE_EXTS or mime.startswith("image/"):
-        page = _extract_image(data)
+        page = _extract_image(data, ocr_langs=langs)
         return ExtractedContent(pages=[page], ocr_used=True, kind_detail="image")
     # Check CSV/TSV by extension FIRST — before MIME-based xlsx routing because
     # some browsers/tools send CSV files with application/vnd.ms-excel MIME type.

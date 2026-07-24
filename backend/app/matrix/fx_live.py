@@ -50,7 +50,17 @@ async def _fetch_usd_table() -> dict[str, Decimal]:
 
 async def get_pkr_rate(currency: str) -> FxRate:
     """PKR per one unit of `currency` (USD or CNY), live if possible."""
-    ccy = (currency or "").strip().upper()
+    return await get_live_rate(currency, "PKR")
+
+
+async def get_live_rate(base: str, quote: str) -> FxRate:
+    """`quote` units per 1 unit of `base`, live if possible, static fallback.
+
+    Generalises `get_pkr_rate` to any currency pair. The upstream table is
+    USD-based, so cross rates are derived (table[quote] / table[base]).
+    """
+    b = (base or "").strip().upper()
+    q = (quote or "").strip().upper()
     today = date.today()
     try:
         table = _CACHE.get(today)
@@ -58,16 +68,15 @@ async def get_pkr_rate(currency: str) -> FxRate:
             table = await _fetch_usd_table()
             _CACHE.clear()
             _CACHE[today] = table
-        pkr_per_usd = table["PKR"]
-        if ccy == "USD":
-            rate = pkr_per_usd
-        else:
-            rate = pkr_per_usd / table[ccy]
-        return FxRate(currency=ccy, rate=rate, as_of_date=today, source="live")
+        # table[X] is units of X per 1 USD.
+        base_per_usd = Decimal(1) if b == "USD" else table[b]
+        quote_per_usd = Decimal(1) if q == "USD" else table[q]
+        rate = quote_per_usd / base_per_usd
+        return FxRate(currency=q, rate=rate, as_of_date=today, source="live")
     except Exception:
         return FxRate(
-            currency=ccy,
-            rate=convert(Decimal(1), ccy, "PKR"),
+            currency=q,
+            rate=convert(Decimal(1), b, q),
             as_of_date=today,
             source="static",
         )

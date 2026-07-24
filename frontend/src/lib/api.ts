@@ -207,6 +207,7 @@ export interface BomItem {
   target_price: string | null;
   notes: string | null;
   hs_code: string | null;
+  selected_supplier_id: string | null;
 }
 
 export interface Supplier {
@@ -228,9 +229,13 @@ export interface Document {
   status: string;
   page_count: number | null;
   ocr_used: boolean;
+  ocr_langs: string | null;
   error: string | null;
   created_at: string;
   auto_bom_created?: number;
+  phase?: string | null;
+  progress?: number | null;
+  eta_seconds?: number | null;
 }
 
 export interface ExtractedField {
@@ -304,6 +309,7 @@ export interface MatrixRow {
   target_price: number | null;
   hs_code: string | null;
   best_supplier_id: string | null;
+  selected_supplier_id: string | null;
   spread_pct: number | null;
   cells: Record<string, MatrixCell>;
 }
@@ -318,6 +324,7 @@ export interface Matrix {
     fx_overrides: Record<string, number>;
     fx_rate_pkr_usd: number | null;
     fx_rate_source: "override" | "live" | "static" | null;
+    display_rate: number | null;
     duty_as_of: string | null;
   };
   suppliers: { id: string; name: string; country: string | null }[];
@@ -339,6 +346,17 @@ export interface MatrixParams {
   freight_per_unit?: number;
   lc_pct?: number;
   fx_rate?: number;
+  // "1 USD = display_rate <currency>" — overrides the bundled rate for the
+  // display currency so the whole matrix reflects the rate box's value.
+  display_rate?: number;
+}
+
+export interface LiveFxRate {
+  base: string;
+  quote: string;
+  rate: number;
+  source: "live" | "static";
+  as_of_date: string;
 }
 
 export interface ChatMessage {
@@ -965,10 +983,16 @@ export const api = {
   // Documents
   listDocuments: (pid: string) =>
     request<Document[]>(`/projects/${pid}/documents`),
-  uploadDocuments: (pid: string, files: File[], kind?: string) => {
+  uploadDocuments: (
+    pid: string,
+    files: File[],
+    kind?: string,
+    ocrLangs?: string[],
+  ) => {
     const fd = new FormData();
     for (const f of files) fd.append("files", f);
     if (kind) fd.append("kind", kind);
+    if (ocrLangs && ocrLangs.length) fd.append("ocr_langs", ocrLangs.join(","));
     return request<Document[]>(`/projects/${pid}/documents`, {
       method: "POST",
       body: fd,
@@ -1001,6 +1025,9 @@ export const api = {
     apiUrl(
       `/projects/${pid}/matrix/export${qs(params as Record<string, unknown>)}`,
     ),
+  // Today's international rate (quote per 1 base), static-fallback if offline.
+  liveFxRate: (base: string, quote: string) =>
+    request<LiveFxRate>(`/fx/live${qs({ base, quote })}`),
 
   // Chat
   chatHistory: (pid: string) =>

@@ -77,6 +77,13 @@ class BomItem(UUIDPKMixin, TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Pakistan PCT/HS code for statutory duty in the comparison matrix.
     hs_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # User's chosen supplier for this line in the comparison, driving the
+    # quotation. NULL falls back to the cheapest ("best value") supplier.
+    selected_supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("suppliers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
 
 class Supplier(UUIDPKMixin, TimestampMixin, Base):
@@ -117,6 +124,9 @@ class Document(UUIDPKMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String, default="pending", nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # OCR languages chosen at upload (CSV, e.g. "en" or "en,ch"); NULL uses the
+    # configured default. Preserved across re-parse.
+    ocr_langs: Mapped[str | None] = mapped_column(String, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Free-form stage log for debugging the pipeline.
     stage_log: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

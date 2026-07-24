@@ -15,28 +15,28 @@ test.describe("workbench", () => {
 
     await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+/);
 
-    // BOM: paste two lines from "Excel".
-    await page.getByRole("tab", { name: "BOM" }).click();
+    // Duty step: paste two lines from "Excel" into the item editor.
+    await page.getByRole("button", { name: "Duty" }).click();
     await page
       .getByPlaceholder(/Paste tab-separated/)
       .fill("Thermal Camera\t640x480\t100\t1200\nTripod\tAluminium\t50\t40");
     await page.getByRole("button", { name: /Import/ }).click();
-    // The imported line renders as an editable input inside the BOM grid.
+    // The imported line renders as an editable input inside the item grid.
     await expect(
       page.locator("table tbody input").first(),
     ).toHaveValue("Thermal Camera");
 
-    // Matrix renders both BOM lines.
-    await page.getByRole("tab", { name: "Matrix" }).click();
-    await expect(page.getByTestId("matrix-table")).toBeVisible();
-    await expect(page.getByText("1. Thermal Camera")).toBeVisible();
-    await expect(page.getByText("2. Tripod")).toBeVisible();
-
-    // Adjust an assumption; the input holds the new value (matrix refetches).
+    // Adjust the fallback duty assumption on the Duty step.
     const duty = page.getByLabel("Duty percent");
     await duty.fill("12");
     await duty.blur();
     await expect(duty).toHaveValue("12");
+
+    // Compare step renders both BOM lines in the matrix.
+    await page.getByRole("button", { name: "Compare" }).click();
+    await expect(page.getByTestId("matrix-table")).toBeVisible();
+    await expect(page.getByText("1. Thermal Camera")).toBeVisible();
+    await expect(page.getByText("2. Tripod")).toBeVisible();
 
     // Export the matrix as XLSX.
     const [download] = await Promise.all([
@@ -54,7 +54,7 @@ test.describe("workbench", () => {
     await page.getByRole("button", { name: "Create" }).click();
     await page.getByText("Inbox Project").click();
 
-    await page.getByRole("tab", { name: "Inbox" }).click();
+    // Upload is the first step of the guided flow, so the dropzone is already shown.
     await page.locator('input[type="file"]').setInputFiles({
       name: "quote.txt",
       mimeType: "text/plain",

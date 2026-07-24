@@ -110,6 +110,8 @@ class BomItemUpdate(BaseModel):
     target_price: Decimal | None = None
     notes: str | None = None
     hs_code: str | None = None
+    # Chosen supplier for the quotation; null clears back to the best-value default.
+    selected_supplier_id: uuid.UUID | None = None
 
 
 class BomItemOut(ORMModel):
@@ -122,6 +124,7 @@ class BomItemOut(ORMModel):
     target_price: Decimal | None
     notes: str | None
     hs_code: str | None
+    selected_supplier_id: uuid.UUID | None = None
 
 
 class BomPasteRequest(BaseModel):
@@ -225,18 +228,30 @@ class DocumentOut(ORMModel):
     status: str
     page_count: int | None
     ocr_used: bool
+    ocr_langs: str | None = None
     error: str | None
     created_at: datetime
     auto_bom_created: int = 0
+    # Progress bar / ETA (derived from stage_log timing). progress is 0..1;
+    # eta_seconds is the estimated time remaining, both null when not applicable.
+    phase: str | None = None
+    progress: float | None = None
+    eta_seconds: float | None = None
 
     @model_validator(mode="wrap")
     @classmethod
-    def _inject_auto_bom(cls, value, handler):
+    def _inject_derived(cls, value, handler):
         out = handler(value)
         if hasattr(value, "stage_log"):
+            from app.ingestion.progress import document_progress
+
             persist = (value.stage_log or {}).get("persist") or {}
             if isinstance(persist, dict):
                 out.auto_bom_created = int(persist.get("auto_bom_created") or 0)
+            prog = document_progress(value.status, value.stage_log)
+            out.phase = prog["phase"]
+            out.progress = prog["progress"]
+            out.eta_seconds = prog["eta_seconds"]
         return out
 
 

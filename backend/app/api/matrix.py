@@ -12,8 +12,31 @@ from app.db.models import User
 from app.db.session import get_session
 from app.matrix.builder import build_matrix
 from app.matrix.export import matrix_to_xlsx
+from app.matrix.fx_live import get_live_rate
 
 router = APIRouter(tags=["matrix"])
+
+
+@router.get("/fx/live")
+async def fx_live(
+    base: str = "USD",
+    quote: str = "PKR",
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Live (or static-fallback) rate: `quote` units per 1 `base`.
+
+    Used to seed the matrix currency rate box with today's international rate;
+    the value stays user-overridable because it is the open-market rate, not a
+    customs-notified rate.
+    """
+    rate = await get_live_rate(base, quote)
+    return {
+        "base": (base or "").upper(),
+        "quote": (quote or "").upper(),
+        "rate": float(rate.rate),
+        "source": rate.source,
+        "as_of_date": rate.as_of_date.isoformat(),
+    }
 
 
 def _overrides(
@@ -36,6 +59,7 @@ async def get_matrix(
     freight_per_unit: float | None = None,
     lc_pct: float | None = None,
     fx_rate: float | None = None,
+    display_rate: float | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -46,6 +70,7 @@ async def get_matrix(
         currency=currency,
         overrides=_overrides(duty_pct, freight_per_unit, lc_pct),
         fx_rate=fx_rate,
+        display_rate=display_rate,
     )
 
 
@@ -57,6 +82,7 @@ async def export_matrix(
     freight_per_unit: float | None = None,
     lc_pct: float | None = None,
     fx_rate: float | None = None,
+    display_rate: float | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -67,6 +93,7 @@ async def export_matrix(
         currency=currency,
         overrides=_overrides(duty_pct, freight_per_unit, lc_pct),
         fx_rate=fx_rate,
+        display_rate=display_rate,
     )
     data = matrix_to_xlsx(matrix)
     filename = f"matrix-{project_id}.xlsx"
